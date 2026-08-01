@@ -1,0 +1,21 @@
+radio:
+  # TS-590S USB serial (CAT) port. Linux: /dev/ttyACM0, Windows: COM3
+  port: "COM11"
+  baud: 115200
+  # power the rig on when the server starts
+  powerOnConnect: false
+
+audio:
+  # substring match for the TS-590S USB audio device name
+  device: "TS-590"
+  sampleRate: 48000
+  channels: 1
+  opusFrameMs: 20
+  opusBitrate: 48000
+  jitterFrames: 2
+
+network:
+  controlAddr: "0.0.0.0:5900"
+  audioAddr: "0.0.0.0:5901"
+  # pre-shared key shared with the macOS client
+  psk: "change-me"

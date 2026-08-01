@@ -1,0 +1,4 @@
+module OpusC {
+    header "opus_shim.h"
+    export *
+}

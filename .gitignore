@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Go build artifacts
+server/ts590-server
+
+# Machine-specific config (contains the PSK); commit server.yaml.example instead
+server/server.yaml
+
+# SwiftPM build artifacts
+client/.build/
+client/RemoteRig.app
+client/.swiftpm/

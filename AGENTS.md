@@ -98,3 +98,17 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   devices and reset to 0 (Default) if not found.
 - Picker errors (invalid selection tags) are prevented by eagerly loading audio
   device lists in `SettingsView` and validating device IDs in `RemoteRigModel.init()`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in this repo. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -6,8 +6,6 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
-
-	"github.com/bartek/ts590-remote/server/internal/audio"
 )
 
 // UDPServer transports Opus audio datagrams. The client's source address
@@ -17,11 +15,11 @@ type UDPServer struct {
 	conn     *net.UDPConn
 	mu       sync.RWMutex
 	client   *net.UDPAddr
-	audioMgr *audio.Manager
+	audioMgr AudioIf
 	log      *zap.Logger
 }
 
-func NewUDPServer(addr string, mgr *audio.Manager, log *zap.Logger) (*UDPServer, error) {
+func NewUDPServer(addr string, mgr AudioIf, log *zap.Logger) (*UDPServer, error) {
 	a, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err

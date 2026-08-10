@@ -71,6 +71,10 @@ func Open(port string, baud int) (*Radio, error) {
 
 func (r *Radio) SetLogger(l *zap.Logger) { r.log = l }
 
+// Events exposes the unsolicited-CAT-output channel. Consumers (e.g. the
+// control server) read from it to forward rig events to clients.
+func (r *Radio) Events() <-chan string { return r.EventCh }
+
 // Close tears down the reader and serial port.
 func (r *Radio) Close() {
 	r.done.Do(func() {

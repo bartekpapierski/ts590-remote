@@ -47,17 +47,19 @@ func main() {
 	}
 	defer func() { _ = cleanupAudio() }()
 
+	var radIf netpkg.RadioIf
 	var rad *radio.Radio
 	if r, err := radio.Open(cfg.Radio.Port, cfg.Radio.Baud); err != nil {
 		logger.Warn("radio not opened; CAT disabled", zap.Error(err), zap.String("port", cfg.Radio.Port))
 	} else {
 		r.SetLogger(logger)
-		rad = r
 		if cfg.Radio.PowerOnConnect {
-			if err := rad.Power(true); err != nil {
+			if err := r.Power(true); err != nil {
 				logger.Warn("power on failed", zap.Error(err))
 			}
 		}
+		rad = r
+		radIf = r
 	}
 
 	def := &protocol.OpusParams{
@@ -74,7 +76,7 @@ func main() {
 	}
 	mgr.SetSendDown(udp.SendDownlink)
 
-	ctrl := netpkg.NewControlServer(cfg.Network, rad, mgr, udp, logger)
+	ctrl := netpkg.NewControlServer(cfg.Network, radIf, mgr, logger)
 	if err := ctrl.Listen(); err != nil {
 		logger.Fatal("control server failed", zap.Error(err))
 	}

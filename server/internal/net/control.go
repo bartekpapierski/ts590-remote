@@ -8,30 +8,46 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/bartek/ts590-remote/server/internal/audio"
 	"github.com/bartek/ts590-remote/server/internal/config"
 	"github.com/bartek/ts590-remote/server/internal/protocol"
-	"github.com/bartek/ts590-remote/server/internal/radio"
 )
+
+// RadioIf is the CAT-control surface ControlServer dispatches against. It is
+// satisfied by *radio.Radio in production and by fakes in tests.
+type RadioIf interface {
+	Send(cmd string) (string, error)
+	SetPTT(on bool) error
+	GetState() *protocol.RadioState
+	Events() <-chan string
+}
+
+// AudioIf is the audio lifecycle surface ControlServer and UDPServer use. It
+// is satisfied by *audio.Manager in production and by fakes in tests.
+type AudioIf interface {
+	Start(req *protocol.OpusParams) (*protocol.OpusParams, bool, error)
+	Stop()
+	Running() bool
+	PauseRx(pause bool)
+	RxPaused() bool
+	PushUplink(seq uint16, data []byte)
+}
 
 // ControlServer accepts TCP control connections, authenticates with the
 // pre-shared key, and dispatches CAT / audio / PTT / state messages.
 type ControlServer struct {
 	cfg      config.NetworkConfig
 	psk      string
-	radio    *radio.Radio
-	audioMgr *audio.Manager
-	udp      *UDPServer
+	radio    RadioIf
+	audioMgr AudioIf
 	log      *zap.Logger
 }
 
-func NewControlServer(cfg config.NetworkConfig, rad *radio.Radio, mgr *audio.Manager, udp *UDPServer, log *zap.Logger) *ControlServer {
+func NewControlServer(cfg config.NetworkConfig, rad RadioIf, mgr AudioIf, log *zap.Logger) *ControlServer {
 	return &ControlServer{
 		cfg:      cfg,
 		psk:      cfg.PSK,
 		radio:    rad,
 		audioMgr: mgr,
-		udp:      udp,
 		log:      log,
 	}
 }
@@ -106,7 +122,7 @@ func (c *ControlServer) handle(conn net.Conn) {
 				select {
 				case <-evDone:
 					return
-				case ev := <-c.radio.EventCh:
+				case ev := <-c.radio.Events():
 					send(protocol.MsgCatEvent(ev))
 				}
 			}

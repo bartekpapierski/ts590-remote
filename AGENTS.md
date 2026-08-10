@@ -26,9 +26,13 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   `docker run -v /dev/ttyACM0:/dev/ttyACM0 -p 5900:5900/tcp -p 5901:5901/udp ts590-server`.
 - Tests: `go test ./internal/...` (tests in `server/internal/*_test.go`).
   Covers: radio command parsing (`freqStr`, `parseFreq`, `digitsAfter`, mode tables),
+  `radio.Send`/`handleLine` reply-or-event matching through a scripted fake port
+  (`isQueryCmd`, `timeoutFor`, query echo / reject / fire-and-forget / timeout),
   audio param clamping (`ClampParams`, `FrameSize`), jitter buffer (`seqDelta`, put/get,
   lost-packet skipping, wraparound), protocol message builders, config loading with
-  defaults, and concurrent `msgWriter` integrity (run with `-race`).
+  defaults, and — in `net` — table-driven `dispatch` (every message type through the
+  `RadioIf`/`AudioIf` seams, run with `-race`), `handle` auth + CAT + event forwarding
+  over `net.Pipe`, and concurrent `msgWriter` integrity.
 - Audio test files are tagged `!noaudio`; `go test -tags noaudio ./...` also passes
   (verifies the headless build compiles and its stub Manager behaves).
 - `go vet ./...` is the only additional static check.
@@ -42,9 +46,12 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   Requested Opus params are clamped to device capabilities; the effective params
   are sent back to the client in `audio_params` (client must re-configure).
 - `net.ControlServer` — TCP, line-delimited JSON. PSK auth first, then dispatches
-  `cat`, `audio`, `audio_rx`, `ptt`, `state_req`.
-- `net.UDPServer` — UDP audio. Learns the client's source address from the first
-  packet (or a 2-byte hello) before sending downlink.
+  `cat`, `audio`, `audio_rx`, `ptt`, `state_req`. It consumes the consumer-side
+  `net.RadioIf` / `net.AudioIf` seams (not concrete `*radio.Radio` / `*audio.Manager`),
+  so dispatch and handle are testable against fakes without hardware; `main.go` builds
+  the seams explicitly (an explicit nil interface when the radio fails to open).
+- `net.UDPServer` — UDP audio, also behind `net.AudioIf`. Learns the client's source
+  address from the first packet (or a 2-byte hello) before sending downlink.
 
 ## Client (Swift)
 

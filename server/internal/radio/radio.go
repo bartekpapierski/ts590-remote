@@ -18,11 +18,19 @@ var (
 	ErrNoPending  = errors.New("radio: no pending request matched")
 )
 
-// Radio wraps the TS-590S serial (CAT) connection.
+// Radio wraps the TS-590S serial (CAT) connection. I/O flows through the
+// reader/writer/closer seam so the reply-matching state machine in Send and
+// handleLine can be tested against a scripted fake instead of hardware.
 type Radio struct {
 	mu     sync.Mutex
-	port   serial.Port
 	reader io.Reader
+	writer io.Writer
+	closer io.Closer
+
+	// Reply timeouts. Send uses these; tests shorten them.
+	setWait      time.Duration // set commands: wait for a possible "?" error reply
+	queryTimeout time.Duration // query commands: wait for the echo
+	powerTimeout time.Duration // "PS;" specifically, power-on can take seconds
 
 	closed chan struct{}
 	done   sync.Once
@@ -43,6 +51,28 @@ type pendingReq struct {
 	respCh chan string
 }
 
+// New builds a Radio over an arbitrary reader/writer/closer and starts its
+// read loop. Open wires the real serial port through it; tests inject a
+// scripted fake.
+func New(reader io.Reader, writer io.Writer, closer io.Closer, log *zap.Logger) *Radio {
+	r := &Radio{
+		reader:       reader,
+		writer:       writer,
+		closer:       closer,
+		setWait:      400 * time.Millisecond,
+		queryTimeout: 1500 * time.Millisecond,
+		powerTimeout: 10 * time.Second,
+		closed:       make(chan struct{}),
+		EventCh:      make(chan string, 64),
+		log:          zap.NewNop(),
+	}
+	if log != nil {
+		r.log = log
+	}
+	go r.readLoop()
+	return r
+}
+
 // Open connects to the rig's CAT serial port and starts the reader goroutine.
 func Open(port string, baud int) (*Radio, error) {
 	mode := &serial.Mode{
@@ -58,15 +88,7 @@ func Open(port string, baud int) (*Radio, error) {
 	// Non-blocking-ish reads so the loop can observe shutdown.
 	_ = p.SetReadTimeout(time.Millisecond * 100)
 
-	r := &Radio{
-		port:    p,
-		reader:  p,
-		closed:  make(chan struct{}),
-		EventCh: make(chan string, 64),
-		log:     zap.NewNop(),
-	}
-	go r.readLoop()
-	return r, nil
+	return New(p, p, p, nil), nil
 }
 
 func (r *Radio) SetLogger(l *zap.Logger) { r.log = l }
@@ -80,8 +102,8 @@ func (r *Radio) Close() {
 	r.done.Do(func() {
 		close(r.closed)
 		r.mu.Lock()
-		if r.port != nil {
-			_ = r.port.Close()
+		if r.closer != nil {
+			_ = r.closer.Close()
 		}
 		r.mu.Unlock()
 	})
@@ -148,7 +170,7 @@ func (r *Radio) handleLine(line string) {
 // only, and treat set commands as fire-and-forget (with a short wait for a
 // possible "?" error reply).
 func (r *Radio) Send(cmd string) (string, error) {
-	if r == nil || r.port == nil {
+	if r == nil || r.writer == nil {
 		return "", ErrNotOpen
 	}
 	cmd = strings.TrimSpace(cmd)
@@ -159,7 +181,7 @@ func (r *Radio) Send(cmd string) (string, error) {
 		return "", errors.New("radio: command too short")
 	}
 	code := cmd[:2]
-	isQuery := len(cmd) == 3 // "XX;" exactly: a read; anything longer is a write
+	isQuery := isQueryCmd(cmd)
 
 	pr := &pendingReq{code: code, respCh: make(chan string, 1)}
 	r.pendingMu.Lock()
@@ -169,14 +191,10 @@ func (r *Radio) Send(cmd string) (string, error) {
 	r.log.Debug("cat send", zap.String("cmd", cmd))
 
 	r.mu.Lock()
-	_, err := r.port.Write([]byte(cmd))
+	_, err := r.writer.Write([]byte(cmd))
 	r.mu.Unlock()
 	if err != nil {
-		r.pendingMu.Lock()
-		if r.pending == pr {
-			r.pending = nil
-		}
-		r.pendingMu.Unlock()
+		r.clearPending(pr)
 		return "", err
 	}
 
@@ -185,31 +203,18 @@ func (r *Radio) Send(cmd string) (string, error) {
 		// error reply; otherwise assume success.
 		select {
 		case resp := <-pr.respCh:
-			r.pendingMu.Lock()
-			if r.pending == pr {
-				r.pending = nil
-			}
-			r.pendingMu.Unlock()
+			r.clearPending(pr)
 			if resp == "?;" {
 				r.log.Debug("cat rejected", zap.String("cmd", code))
 				return "", errors.New("radio: command rejected")
 			}
 			return resp, nil
-		case <-time.After(400 * time.Millisecond):
-			r.pendingMu.Lock()
-			if r.pending == pr {
-				r.pending = nil
-			}
-			r.pendingMu.Unlock()
+		case <-time.After(r.setWait):
+			r.clearPending(pr)
 			return "", nil
 		}
 	}
 
-	timeout := 1500 * time.Millisecond
-	if code == "PS" {
-		// Powering on the rig takes several seconds (DSP boot), so wait longer.
-		timeout = 10000 * time.Millisecond
-	}
 	select {
 	case resp := <-pr.respCh:
 		if resp == "?;" {
@@ -218,13 +223,33 @@ func (r *Radio) Send(cmd string) (string, error) {
 		}
 		r.log.Debug("cat recv", zap.String("cmd", code), zap.String("resp", resp))
 		return resp, nil
-	case <-time.After(timeout):
-		r.pendingMu.Lock()
-		if r.pending == pr {
-			r.pending = nil
-		}
-		r.pendingMu.Unlock()
+	case <-time.After(r.timeoutFor(code)):
+		r.clearPending(pr)
 		r.log.Warn("cat timeout", zap.String("cmd", cmd))
 		return "", ErrTimeout
 	}
+}
+
+// clearPending drops pr from the pending slot unless a newer request has
+// taken its place.
+func (r *Radio) clearPending(pr *pendingReq) {
+	r.pendingMu.Lock()
+	if r.pending == pr {
+		r.pending = nil
+	}
+	r.pendingMu.Unlock()
+}
+
+// isQueryCmd reports whether a normalized CAT command ("XX;" exactly) is a
+// read; a longer command is a write. The caller must have appended ';' — the
+// helper does not validate it.
+func isQueryCmd(cmd string) bool { return len(cmd) == 3 }
+
+// timeoutFor returns the reply window for a command code. Powering on the rig
+// takes several seconds (DSP boot), so the PS code gets a longer window.
+func (r *Radio) timeoutFor(code string) time.Duration {
+	if code == "PS" {
+		return r.powerTimeout
+	}
+	return r.queryTimeout
 }

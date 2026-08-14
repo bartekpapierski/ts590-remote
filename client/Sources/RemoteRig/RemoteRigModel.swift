@@ -89,6 +89,10 @@ final class RemoteRigModel: ObservableObject {
     // message sent, so tests can assert auto-start without a live connection.
     var onSendAudio: ((String) -> Void)?
 
+    // Test seam: invoked for every state refresh request, so tests can assert
+    // when the panel re-syncs without a live connection.
+    var onSendStateReq: (() -> Void)?
+
     // MARK: lifecycle
     func connect() {
         disconnect()
@@ -325,14 +329,18 @@ final class RemoteRigModel: ObservableObject {
         send(Msg(t: "audio_rx", action: next ? "pause" : "resume"))
     }
 
-    func togglePower() {
-        let next = !powerOn
-        powerOn = next
-        sendCat(next ? "PS1;" : "PS0;")
-        refreshState()
+    // Rig power — the PS command. Powering the rig off drops it into standby,
+    // so the state refresh is skipped (the rig would not answer for seconds);
+    // powering on syncs the panel once the rig has booted.
+    func setRigPower(_ on: Bool) {
+        guard on != powerOn else { return }
+        powerOn = on
+        sendCat(on ? "PS1;" : "PS0;")
+        if on { refreshState() }
     }
 
     func refreshState() {
+        onSendStateReq?()
         send(Msg(t: "state_req"))
     }
 

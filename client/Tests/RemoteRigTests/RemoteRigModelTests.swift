@@ -374,6 +374,86 @@ struct RemoteRigModelTests {
         #expect(model.audioOn == false)
     }
 
+    // MARK: Power
+
+    @Test func testSetRigPowerOnSendsPS1() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.setRigPower(true)
+
+        #expect(model.powerOn == true)
+        #expect(sent == ["PS1;"])
+    }
+
+    @Test func testSetRigPowerOnRefreshesState() {
+        let model = RemoteRigModel()
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+
+        #expect(stateReqs == 1)
+    }
+
+    @Test func testSetRigPowerOffSendsPS0() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        model.powerOn = true
+
+        model.setRigPower(false)
+
+        #expect(model.powerOn == false)
+        #expect(sent == ["PS0;"])
+    }
+
+    @Test func testSetRigPowerOffSkipsStateRefresh() {
+        let model = RemoteRigModel()
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+        model.powerOn = true
+
+        model.setRigPower(false)
+
+        #expect(stateReqs == 0)
+    }
+
+    @Test func testSetRigPowerNoopOnSameState() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        model.powerOn = true
+
+        model.setRigPower(true)
+
+        #expect(sent.isEmpty)
+    }
+
+    @Test func testStateReportPaintsRigPower() {
+        let model = RemoteRigModel()
+        model.powerOn = true
+        model.handleLine(#"{"t":"state","state":{"freqA":14000000,"freqB":7000000,"mode":"USB","ptt":false,"af":120,"rf":255,"power":50,"sql":0,"smeter":0,"audioOn":false,"rxPaused":false,"powerOn":false}}"#)
+
+        #expect(model.powerOn == false)
+    }
+
+    @Test func testStaleStatePowerOffSendsPS0() {
+        // The client believes the rig is on but it was powered off at the
+        // panel. The label is honest ("Power Off"), so the click still targets
+        // the last-known state and a redundant PS0; is harmless.
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        model.powerOn = true
+
+        model.setRigPower(false)
+
+        #expect(model.powerOn == false)
+        #expect(sent == ["PS0;"])
+    }
+
     @Test func testOpusBitrateRange() {
         // The stepper works in whole kbps and must stay within the server's
         // clamp range [500, 128000] bps.

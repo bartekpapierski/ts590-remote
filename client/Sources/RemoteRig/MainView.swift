@@ -119,8 +119,6 @@ struct MainView: View {
                     labeledSlider("PWR", value: model.power, range: 0...100, set: model.setPower)
                     labeledSlider("SQL", value: model.sql, range: 0...255, set: model.setSQL)
                     labeledSlider("AF", value: model.af, range: 0...255, set: model.setAF)
-                    Divider().overlay(Theme.panelEdge)
-                    powerRow
                 }
                 .padding(.top, 8)
             } label: {
@@ -162,24 +160,6 @@ struct MainView: View {
         }
     }
 
-    private var powerRow: some View {
-        Button(action: { model.togglePower() }) {
-            HStack {
-                Text("Power supply")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                Spacer()
-                Circle()
-                    .fill(model.powerOn ? Theme.ok : Theme.dim)
-                    .frame(width: 8, height: 8)
-                Text(model.powerOn ? "ON" : "OFF")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(model.powerOn ? Theme.ok : Theme.dim)
-            }
-            .padding(.vertical, 2)
-        }
-        .buttonStyle(.plain)
-    }
-
     // MARK: status / action bar.
 
     private var statusBar: some View {
@@ -189,6 +169,17 @@ struct MainView: View {
             }
             .buttonStyle(.bordered)
             .tint(model.connected ? Theme.tx : Theme.meter)
+
+            // Rig power sits beside Connect so rig-level state is one glance
+            // away (the PS; timeout is 10 s, longer than the others).
+            Button(action: { model.setRigPower(!model.powerOn) }) {
+                Label(model.powerOn ? "Power Off" : "Power On", systemImage: "power")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            }
+            .buttonStyle(.bordered)
+            .tint(model.powerOn ? Theme.tx : Theme.meter)
+            .help(model.powerOn ? "Turn the rig off (PS0;)" : "Turn the rig on (PS1;)")
+            .disabled(!model.connected)
 
             Circle()
                 .fill(statusColor)

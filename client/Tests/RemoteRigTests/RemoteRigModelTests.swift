@@ -387,14 +387,119 @@ struct RemoteRigModelTests {
         #expect(sent == ["PS1;"])
     }
 
-    @Test func testSetRigPowerOnRefreshesState() {
+    @Test func testSetRigPowerOnRefreshesStateAfterBoot() async throws {
         let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
         var stateReqs = 0
         model.onSendStateReq = { stateReqs += 1 }
 
         model.setRigPower(true)
 
+        // The refresh waits out the boot window, not immediate.
+        #expect(stateReqs == 0)
+
+        try await Task.sleep(for: .milliseconds(200))
         #expect(stateReqs == 1)
+    }
+
+    @Test func testSetRigPowerRefreshCancelledOnDisconnect() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        model.disconnect()
+
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 0)
+    }
+
+    private static let notReadyState = #"{"t":"state","state":{"freqA":0,"freqB":0,"mode":"","ptt":false,"af":0,"rf":0,"power":0,"sql":0,"smeter":0,"audioOn":false,"rxPaused":false,"powerOn":true}}"#
+
+    @Test func testPowerOnSyncRetriesWhileRigBooting() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 1)
+
+        // freqA == 0 (FA; failed) means the rig was still booting; retry.
+        model.handleLine(Self.notReadyState)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 2)
+    }
+
+    @Test func testPowerOnSyncRetriesWhenPowerNotAcknowledged() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 1)
+
+        // FA; answered but PS; did not — the rig is not up yet, keep retrying.
+        model.handleLine(#"{"t":"state","state":{"freqA":14000000,"freqB":14000000,"mode":"USB","ptt":false,"af":120,"rf":255,"power":50,"sql":0,"smeter":0,"audioOn":false,"rxPaused":false,"powerOn":false}}"#)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 2)
+    }
+
+    @Test func testPowerOffCancelsPendingPowerOnSync() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        model.setRigPower(false)
+
+        // Powered back off before the boot window elapsed: nothing refreshes,
+        // and a stale not-ready snapshot must not reopen the cycle.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 0)
+
+        model.handleLine(Self.notReadyState)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 0)
+    }
+
+    @Test func testPowerOnSyncStopsOnceRigAnswers() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 1)
+
+        // A real frequency means the rig answered; the sync cycle ends.
+        model.handleLine(#"{"t":"state","state":{"freqA":14000000,"freqB":14000000,"mode":"USB","ptt":false,"af":120,"rf":255,"power":50,"sql":0,"smeter":0,"audioOn":false,"rxPaused":false,"powerOn":true}}"#)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 1)
+    }
+
+    @Test func testPowerOnSyncGivesUpAfterRetries() async throws {
+        let model = RemoteRigModel()
+        model.powerOnBootDelay = .milliseconds(50)
+        var stateReqs = 0
+        model.onSendStateReq = { stateReqs += 1 }
+
+        model.setRigPower(true)
+        for expected in 1...3 {
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(stateReqs == expected)
+            model.handleLine(Self.notReadyState)
+        }
+
+        // Retries exhausted; the next not-ready state must not schedule more.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stateReqs == 3)
     }
 
     @Test func testSetRigPowerOffSendsPS0() {

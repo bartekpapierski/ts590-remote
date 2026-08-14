@@ -76,6 +76,10 @@ final class RemoteRigModel: ObservableObject {
     private var audioConn: NWConnection?
     var audio: AudioEngine?
     private var downlinkExpected: UInt16 = 0
+    private var pendingStateRefresh: Task<Void, Never>?
+    private var powerOnSyncPending = false
+    private var powerOnSyncRetriesLeft = 0
+    private static let maxPowerOnSyncRetries = 2
 
     // Test seam: invoked for every CAT command sent, so tests can assert what
     // reaches the wire without a live connection.
@@ -92,6 +96,11 @@ final class RemoteRigModel: ObservableObject {
     // Test seam: invoked for every state refresh request, so tests can assert
     // when the panel re-syncs without a live connection.
     var onSendStateReq: (() -> Void)?
+
+    // The rig's DSP takes seconds to boot after PS1;, so a state refresh sent
+    // immediately would time out server-side. Tests shorten this to avoid
+    // real sleeps.
+    var powerOnBootDelay: Duration = .seconds(3)
 
     // MARK: lifecycle
     func connect() {
@@ -110,6 +119,9 @@ final class RemoteRigModel: ObservableObject {
     }
 
     func disconnect() {
+        pendingStateRefresh?.cancel()
+        pendingStateRefresh = nil
+        powerOnSyncPending = false
         control?.cancel()
         control = nil
         connected = false
@@ -208,6 +220,24 @@ final class RemoteRigModel: ObservableObject {
         audioOn = s.audioOn
         rxPaused = s.rxPaused
         powerOn = s.powerOn
+        retryPowerOnSyncIfNeeded(s)
+    }
+
+    // After a power-on sync, the snapshot says "not ready" when either the
+    // frequency read (FA;) or the power read (PS;) failed — freqA == 0 or
+    // powerOn == false. The rig can never sit at 0 Hz, and a power-on cycle
+    // expects PS1;, so either signals it was still booting when the server
+    // snapshot ran. Retry a bounded number of times instead of leaving the
+    // panel stale for however long the boot actually takes.
+    private func retryPowerOnSyncIfNeeded(_ s: RigState) {
+        guard powerOnSyncPending else { return }
+        let rigNotReady = s.freqA == 0 || !s.powerOn
+        if rigNotReady && powerOnSyncRetriesLeft > 0 {
+            powerOnSyncRetriesLeft -= 1
+            scheduleStateRefresh()
+        } else {
+            powerOnSyncPending = false
+        }
     }
 
     // A PTT report from the wire (state or ack). If the rig says the latch is
@@ -331,12 +361,34 @@ final class RemoteRigModel: ObservableObject {
 
     // Rig power — the PS command. Powering the rig off drops it into standby,
     // so the state refresh is skipped (the rig would not answer for seconds);
-    // powering on syncs the panel once the rig has booted.
+    // powering on re-syncs the panel after the boot window, not immediately.
     func setRigPower(_ on: Bool) {
+        pendingStateRefresh?.cancel()
+        pendingStateRefresh = nil
         guard on != powerOn else { return }
         powerOn = on
         sendCat(on ? "PS1;" : "PS0;")
-        if on { refreshState() }
+        if on {
+            powerOnSyncPending = true
+            powerOnSyncRetriesLeft = Self.maxPowerOnSyncRetries
+            scheduleStateRefresh()
+        } else {
+            powerOnSyncPending = false
+        }
+    }
+
+    // The rig's DSP is still booting right after PS1; — queries sent in that
+    // window time out server-side, one after another (PS; alone waits 10 s).
+    // Wait out the boot window before asking for state.
+    private func scheduleStateRefresh() {
+        pendingStateRefresh = Task { @MainActor in
+            do {
+                try await Task.sleep(for: powerOnBootDelay)
+            } catch {
+                return
+            }
+            refreshState()
+        }
     }
 
     func refreshState() {

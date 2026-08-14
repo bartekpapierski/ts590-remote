@@ -20,35 +20,86 @@ final class WheelNSView: NSView {
         onWheel?(event.deltaY)
     }
 
+    // The overlay must not swallow clicks: forward mouse events up the
+    // responder chain so the digit columns' onTapGesture still fire.
+    override func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
+    override func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
+
     override var acceptsFirstResponder: Bool { true }
 }
 
-// The VFO readout, grouped to the kHz and MHz, readable to 1 Hz. Scroll to
-// tune at the current step; a dashed readout means the rig is unreachable.
+// One character of the readout. Digits carry the column they sit in
+// (0 = most significant, 7 = 1 Hz); group separators have a nil column.
+struct ReadoutCell: Identifiable {
+    let index: Int
+    let column: Int?
+    let character: Character
+    var id: Int { index }
+}
+
+// The VFO readout, grouped to the kHz and MHz, readable to 1 Hz. Click a digit
+// column to select it; scroll then tunes in that column's place value,
+// overriding the step buttons while selected. A dashed readout means the rig
+// is unreachable.
 struct FrequencyView: View {
     @EnvironmentObject var model: RemoteRigModel
+    @State private var selectedColumn: Int?
+
+    // Place value in Hz of each digit column, most significant first.
+    private static let placeValues: [Int64] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1]
 
     var body: some View {
         VStack(spacing: 4) {
-            Text(formatted)
-                .font(.system(size: 46, weight: .regular, design: .monospaced))
-                .monospacedDigit()
-                .foregroundColor(model.connected ? Theme.readout : Theme.dim)
-                .frame(minWidth: 300, minHeight: 56)
-                .overlay(ScrollWheelView { dy in
-                    let step = max(model.stepHz, 1)
-                    model.nudgeFreq(dy > 0 ? step : -step)
-                })
-                .help("Scroll to tune. Step: \(model.stepHz) Hz")
+            readout
             Text(caption)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(Theme.dim)
         }
     }
 
-    private var formatted: String {
-        guard model.connected else { return "–.---.---" }
-        return Self.formatFreq(max(model.activeFreq, 0))
+    private var readout: some View {
+        VStack(spacing: 0) {
+            if model.connected {
+                digitCells
+            } else {
+                Text("–.---.---")
+            }
+        }
+        .font(.system(size: 46, weight: .regular, design: .monospaced))
+        .monospacedDigit()
+        .foregroundColor(model.connected ? Theme.readout : Theme.dim)
+        .frame(minWidth: 300, minHeight: 56)
+        .overlay(ScrollWheelView { dy in
+            guard model.connected else { return }
+            model.nudgeFreq(Self.scrollStep(deltaY: dy, column: selectedColumn, fallback: model.stepHz))
+        })
+        .help(scrollHelp)
+    }
+
+    private var digitCells: some View {
+        HStack(spacing: 0) {
+            ForEach(Self.readoutCells(for: model.activeFreq)) { cell in
+                if let col = cell.column {
+                    Text(String(cell.character))
+                        .frame(width: 30, height: 56)
+                        .background(selectedColumn == col ? Theme.meter.opacity(0.22) : Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedColumn = (selectedColumn == col) ? nil : col
+                        }
+                } else {
+                    Text(String(cell.character))
+                        .frame(height: 56)
+                }
+            }
+        }
+    }
+
+    private var scrollHelp: String {
+        if let col = selectedColumn {
+            return "Scroll to tune \(Self.placeValue(for: col)) Hz. Click the digit again to clear."
+        }
+        return "Scroll to tune. Step: \(model.stepHz) Hz. Click a digit to tune its column."
     }
 
     static func formatFreq(_ freq: Int64) -> String {
@@ -57,6 +108,40 @@ struct FrequencyView: View {
         let khz = rem / 1000
         let hz = rem % 1000
         return String(format: "%02d.%03d.%03d", mhz, khz, hz)
+    }
+
+    // Build the readout's characters with their digit columns from a frequency.
+    static func readoutCells(for freq: Int64) -> [ReadoutCell] {
+        formatFreq(max(freq, 0)).enumerated().map { i, ch in
+            ReadoutCell(index: i, column: column(at: i), character: ch)
+        }
+    }
+
+    // Column of the character at `index` in the "xx.xxx.xxx" readout, or nil
+    // for a group separator ('.' at index 2 and 6).
+    static func column(at index: Int) -> Int? {
+        switch index {
+        case 0...1: return index
+        case 2, 6: return nil
+        case 3...5: return index - 1
+        case 7...9: return index - 2
+        default: return nil
+        }
+    }
+
+    // Tuning step in Hz for a digit column; out-of-range columns fall back to
+    // the 1 Hz column so the nudge stays sane.
+    static func placeValue(for column: Int) -> Int64 {
+        guard placeValues.indices.contains(column) else { return 1 }
+        return placeValues[column]
+    }
+
+    // Nudge for a scroll tick: the selected column's place value when a column
+    // is active, otherwise the step-button step (clamped to at least 1 Hz).
+    static func scrollStep(deltaY: CGFloat, column: Int?, fallback: Int64) -> Int64 {
+        guard deltaY != 0 else { return 0 }
+        let step = column.map { placeValue(for: $0) } ?? max(fallback, 1)
+        return deltaY > 0 ? step : -step
     }
 
     // Caption line: band + active VFO (A/B).

@@ -13,7 +13,7 @@ type Message struct {
 
 	// generic response / event payload
 	Raw  string `json:"raw,omitempty"`
-	State *RadioState `json:"state,omitempty"`
+	State *RigState `json:"state,omitempty"`
 
 	// audio control
 	Action  string      `json:"action,omitempty"`
@@ -46,8 +46,8 @@ type OpusParams struct {
 	Bitrate    int `json:"bitrate"`
 }
 
-// RadioState is a snapshot of the rig used for the `state` message.
-type RadioState struct {
+// RigState is a snapshot of the rig used for the `state` message.
+type RigState struct {
 	FreqA   int64  `json:"freqA"`
 	FreqB   int64  `json:"freqB"`
 	Mode    string `json:"mode"`
@@ -71,7 +71,7 @@ func MsgError(msg string) Message { return Message{T: "error", Msg: msg} }
 func MsgCatResp(raw string) Message    { return Message{T: "cat_resp", Raw: raw} }
 func MsgCatEvent(raw string) Message   { return Message{T: "cat_event", Raw: raw} }
 
-func MsgState(s *RadioState) Message { return Message{T: "state", State: s} }
+func MsgState(s *RigState) Message { return Message{T: "state", State: s} }
 
 func MsgAudioStatus(status string) Message { return Message{T: "audio", Status: status} }
 

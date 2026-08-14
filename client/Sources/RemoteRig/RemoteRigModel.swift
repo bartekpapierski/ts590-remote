@@ -3,10 +3,18 @@ import Network
 import SwiftUI
 import AudioToolbox
 
+// The rig's two tunable registers. The active VFO drives the front end, so a
+// switch sends FR0;/FR1; to keep S-meter and mode in agreement with the readout.
+enum VFO: Equatable {
+    case a
+    case b
+}
+
 @MainActor
 final class RemoteRigModel: ObservableObject {
     // MARK: published UI state
     @Published var connected = false
+    @Published var activeVFO: VFO = .a
     @Published var freqA: Int64 = 14000000
     @Published var freqB: Int64 = 14000000
     @Published var mode = "USB"
@@ -68,9 +76,14 @@ final class RemoteRigModel: ObservableObject {
     var audio: AudioEngine?
     private var downlinkExpected: UInt16 = 0
 
+    // Test seam: invoked for every CAT command sent, so tests can assert what
+    // reaches the wire without a live connection.
+    var onSendCat: ((String) -> Void)?
+
     // MARK: lifecycle
     func connect() {
         disconnect()
+        activeVFO = .a
         status = "connecting…"
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
@@ -167,7 +180,7 @@ final class RemoteRigModel: ObservableObject {
         }
     }
 
-    private func applyState(_ s: RadioState) {
+    private func applyState(_ s: RigState) {
         freqA = s.freqA
         freqB = s.freqB
         mode = s.mode
@@ -212,15 +225,34 @@ final class RemoteRigModel: ObservableObject {
     }
 
     // MARK: commands
-    func sendCat(_ cmd: String) { send(Msg(t: "cat", cmd: cmd)) }
+    func sendCat(_ cmd: String) {
+        onSendCat?(cmd)
+        send(Msg(t: "cat", cmd: cmd))
+    }
+
+    // The frequency of the active VFO, for readout/band and nudge arithmetic.
+    var activeFreq: Int64 { activeVFO == .a ? freqA : freqB }
 
     func setFreq(_ hz: Int64) {
         let clamped = max(hz, 0)
-        freqA = clamped
-        let s = String(format: "%011d", clamped)
-        sendCat("FA" + s + ";")
+        switch activeVFO {
+        case .a:
+            freqA = clamped
+        case .b:
+            freqB = clamped
+        }
+        let prefix = activeVFO == .a ? "FA" : "FB"
+        sendCat(prefix + String(format: "%011d", clamped) + ";")
     }
-    func nudgeFreq(_ delta: Int64) { setFreq(freqA + delta) }
+    func nudgeFreq(_ delta: Int64) { setFreq(activeFreq + delta) }
+
+    // Select the active VFO and tell the rig (FR0;/FR1;) so S-meter and mode
+    // track the readout.
+    func selectVFO(_ vfo: VFO) {
+        guard vfo != activeVFO else { return }
+        activeVFO = vfo
+        sendCat(vfo == .a ? "FR0;" : "FR1;")
+    }
 
     func setMode(_ m: String) { sendCat("MD" + modeDigit(m) + ";") }
     func modeDigit(_ m: String) -> String {

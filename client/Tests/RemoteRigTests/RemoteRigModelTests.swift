@@ -133,6 +133,78 @@ struct RemoteRigModelTests {
         #expect(model.freqA == 0)
     }
 
+    @Test func testSelectVFOSwitchesTarget() {
+        let model = RemoteRigModel()
+        #expect(model.activeVFO == .a)
+        model.selectVFO(.b)
+        #expect(model.activeVFO == .b)
+        model.selectVFO(.a)
+        #expect(model.activeVFO == .a)
+    }
+
+    @Test func testSelectVFOSendsFR() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.selectVFO(.b)
+        #expect(sent == ["FR1;"])
+
+        model.selectVFO(.a)
+        #expect(sent == ["FR1;", "FR0;"])
+    }
+
+    @Test func testSelectVFOSameVFOSendsNothing() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.selectVFO(.a)
+        #expect(sent.isEmpty)
+    }
+
+    @Test func testSetFreqTargetsActiveVFO() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.selectVFO(.b)
+        model.setFreq(7074000)
+        #expect(model.freqB == 7074000)
+        #expect(model.freqA == 14000000)
+        #expect(sent == ["FR1;", "FB00007074000;"])
+    }
+
+    @Test func testNudgeAppliesToActiveVFO() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.freqA = 14000000
+        model.freqB = 7000000
+
+        model.selectVFO(.b)
+        model.nudgeFreq(100)
+        #expect(model.freqB == 7000100)
+        #expect(model.freqA == 14000000)
+        #expect(sent == ["FR1;", "FB00007000100;"])
+
+        model.selectVFO(.a)
+        model.nudgeFreq(100)
+        #expect(model.freqA == 14000100)
+        #expect(model.freqB == 7000100)
+        #expect(sent == ["FR1;", "FB00007000100;", "FR0;", "FA00014000100;"])
+    }
+
+    @Test func testReconnectDefaultsToVFOA() {
+        let model = RemoteRigModel()
+        model.selectVFO(.b)
+        #expect(model.activeVFO == .b)
+
+        model.connect()
+        #expect(model.activeVFO == .a)
+    }
+
     @Test func testAudioStoppedTearsDownEngine() {
         let model = RemoteRigModel()
         model.setupAudioEngine()

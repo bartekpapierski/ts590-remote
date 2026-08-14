@@ -31,7 +31,7 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   audio param clamping (`ClampParams`, `FrameSize`), jitter buffer (`seqDelta`, put/get,
   lost-packet skipping, wraparound), protocol message builders, config loading with
   defaults, and — in `net` — table-driven `dispatch` (every message type through the
-  `RadioIf`/`AudioIf` seams, run with `-race`), `handle` auth + CAT + event forwarding
+  `RigIf`/`AudioIf` seams, run with `-race`), `handle` auth + CAT + event forwarding
   over `net.Pipe`, and concurrent `msgWriter` integrity.
 - Audio test files are tagged `!noaudio`; `go test -tags noaudio ./...` also passes
   (verifies the headless build compiles and its stub Manager behaves).
@@ -47,7 +47,7 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   are sent back to the client in `audio_params` (client must re-configure).
 - `net.ControlServer` — TCP, line-delimited JSON. PSK auth first, then dispatches
   `cat`, `audio`, `audio_rx`, `ptt`, `state_req`. It consumes the consumer-side
-  `net.RadioIf` / `net.AudioIf` seams (not concrete `*radio.Radio` / `*audio.Manager`),
+  `net.RigIf` / `net.AudioIf` seams (not concrete `*radio.Radio` / `*audio.Manager`),
   so dispatch and handle are testable against fakes without hardware; `main.go` builds
   the seams explicitly (an explicit nil interface when the radio fails to open).
 - `net.UDPServer` — UDP audio, also behind `net.AudioIf`. Learns the client's source

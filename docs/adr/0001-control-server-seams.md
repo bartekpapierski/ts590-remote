@@ -17,7 +17,7 @@ rather than a seam.
 
 Define two small consumer-side interfaces in the `net` package:
 
-- `RadioIf` — `Send`, `SetPTT`, `GetState`, `Events()`, satisfied by `*radio.Radio`
+- `RigIf` — `Send`, `SetPTT`, `GetState`, `Events()`, satisfied by `*radio.Radio`
   in production and by fakes in tests.
 - `AudioIf` — `Start`, `Stop`, `Running`, `PauseRx`, `RxPaused`, `PushUplink`,
   satisfied by `*audio.Manager` in production, by the `noaudio` stub, and by fakes.
@@ -25,7 +25,7 @@ Define two small consumer-side interfaces in the `net` package:
 `ControlServer` and `UDPServer` hold these interfaces, not the concrete types. The
 composition root (`main.go`) builds the seams explicitly — notably an *explicit nil
 interface* when the radio fails to open, because a typed nil `*radio.Radio` wrapped
-in an interface would silently defeat the `c.radio == nil` guard. `dispatch` keeps
+in an interface would silently defeat the `c.rig == nil` guard. `dispatch` keeps
 its current shape and is now table-testable against fakes; `handle` is exercised
 end-to-end over `net.Pipe`.
 

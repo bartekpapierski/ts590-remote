@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:ts590-remote}/client",
+            "name": "Debug RemoteRig (client)",
+            "target": "RemoteRig",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug RemoteRig (client)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:ts590-remote}/client",
+            "name": "Release RemoteRig (client)",
+            "target": "RemoteRig",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release RemoteRig (client)"
+        }
+    ]
+}

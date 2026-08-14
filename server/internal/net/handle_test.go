@@ -17,14 +17,14 @@ import (
 // the dispatch seams: PSK auth handshake, CAT command round-trip, and
 // unsolicited rig events forwarded to the client.
 func TestHandleAuthAndEvents(t *testing.T) {
-	radio := &fakeRadio{sendResp: "FA1400000000;"}
+	rig := &fakeRig{sendResp: "FA1400000000;"}
 	audio := &fakeAudio{}
-	radio.events = make(chan string, 4)
+	rig.events = make(chan string, 4)
 
 	c := &ControlServer{
 		cfg:      config.NetworkConfig{PSK: "test-psk"},
 		psk:      "test-psk",
-		radio:    radio,
+		rig:      rig,
 		audioMgr: audio,
 		log:      zap.NewNop(),
 	}
@@ -89,7 +89,7 @@ func TestHandleAuthAndEvents(t *testing.T) {
 	}
 
 	// unsolicited rig event -> cat_event
-	radio.events <- "SM0000000000000;"
+	rig.events <- "SM0000000000000;"
 	select {
 	case m := <-readAsync(recv):
 		if m.T != "cat_event" || m.Raw != "SM0000000000000;" {

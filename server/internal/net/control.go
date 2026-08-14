@@ -12,12 +12,12 @@ import (
 	"github.com/bartek/ts590-remote/server/internal/protocol"
 )
 
-// RadioIf is the CAT-control surface ControlServer dispatches against. It is
+// RigIf is the CAT-control surface ControlServer dispatches against. It is
 // satisfied by *radio.Radio in production and by fakes in tests.
-type RadioIf interface {
+type RigIf interface {
 	Send(cmd string) (string, error)
 	SetPTT(on bool) error
-	GetState() *protocol.RadioState
+	GetState() *protocol.RigState
 	Events() <-chan string
 }
 
@@ -37,16 +37,16 @@ type AudioIf interface {
 type ControlServer struct {
 	cfg      config.NetworkConfig
 	psk      string
-	radio    RadioIf
+	rig      RigIf
 	audioMgr AudioIf
 	log      *zap.Logger
 }
 
-func NewControlServer(cfg config.NetworkConfig, rad RadioIf, mgr AudioIf, log *zap.Logger) *ControlServer {
+func NewControlServer(cfg config.NetworkConfig, rig RigIf, mgr AudioIf, log *zap.Logger) *ControlServer {
 	return &ControlServer{
 		cfg:      cfg,
 		psk:      cfg.PSK,
-		radio:    rad,
+		rig:      rig,
 		audioMgr: mgr,
 		log:      log,
 	}
@@ -116,13 +116,13 @@ func (c *ControlServer) handle(conn net.Conn) {
 
 	// forward unsolicited rig events to this client
 	evDone := make(chan struct{})
-	if c.radio != nil {
+	if c.rig != nil {
 		go func() {
 			for {
 				select {
 				case <-evDone:
 					return
-				case ev := <-c.radio.Events():
+				case ev := <-c.rig.Events():
 					send(protocol.MsgCatEvent(ev))
 				}
 			}
@@ -149,11 +149,11 @@ func (c *ControlServer) dispatch(msg protocol.Message, send func(protocol.Messag
 	switch msg.T {
 	case "cat":
 		log.Info("cat command", zap.String("cmd", msg.Cmd))
-		if c.radio == nil {
+		if c.rig == nil {
 			send(protocol.MsgError("radio not connected"))
 			return
 		}
-		resp, err := c.radio.Send(msg.Cmd)
+		resp, err := c.rig.Send(msg.Cmd)
 		if err != nil {
 			log.Warn("cat error", zap.String("cmd", msg.Cmd), zap.Error(err))
 			send(protocol.MsgError(err.Error()))
@@ -196,11 +196,11 @@ func (c *ControlServer) dispatch(msg protocol.Message, send func(protocol.Messag
 	case "ptt":
 		on := msg.On != nil && *msg.On
 		log.Info("ptt", zap.Bool("on", on))
-		if c.radio == nil {
+		if c.rig == nil {
 			send(protocol.MsgError("radio not connected"))
 			return
 		}
-		if err := c.radio.SetPTT(on); err != nil {
+		if err := c.rig.SetPTT(on); err != nil {
 			log.Warn("ptt error", zap.Bool("on", on), zap.Error(err))
 			send(protocol.MsgError(err.Error()))
 			return
@@ -209,11 +209,11 @@ func (c *ControlServer) dispatch(msg protocol.Message, send func(protocol.Messag
 
 	case "state_req":
 		log.Info("state request")
-		if c.radio == nil {
+		if c.rig == nil {
 			send(protocol.MsgError("radio not connected"))
 			return
 		}
-		st := c.radio.GetState()
+		st := c.rig.GetState()
 		st.AudioOn = c.audioMgr.Running()
 		st.RxPaused = c.audioMgr.RxPaused()
 		send(protocol.MsgState(st))

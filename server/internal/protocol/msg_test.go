@@ -50,7 +50,7 @@ func TestMsgCatEvent(t *testing.T) {
 }
 
 func TestMsgState(t *testing.T) {
-	s := &RadioState{FreqA: 14000000, Mode: "USB", PTT: true}
+	s := &RigState{FreqA: 14000000, Mode: "USB", PTT: true}
 	m := MsgState(s)
 	if m.T != "state" {
 		t.Errorf("T = %q, want %q", m.T, "state")

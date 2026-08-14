@@ -7,8 +7,8 @@ import (
 )
 
 // GetState snapshots the rig's main parameters for the `state` message.
-func (r *Radio) GetState() *protocol.RadioState {
-	s := &protocol.RadioState{PTT: r.ptt.Load()}
+func (r *Radio) GetState() *protocol.RigState {
+	s := &protocol.RigState{PTT: r.ptt.Load()}
 	if f, err := r.GetFreqVFOA(); err == nil {
 		s.FreqA = f
 	}

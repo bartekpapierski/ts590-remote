@@ -7,7 +7,9 @@ struct RemoteRigApp: App {
     var body: some Scene {
         WindowGroup {
             MainView().environmentObject(model)
+                .preferredColorScheme(.dark)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.automatic)
+        .defaultSize(width: 520, height: 700)
     }
 }

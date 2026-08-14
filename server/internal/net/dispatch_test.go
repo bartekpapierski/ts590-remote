@@ -11,34 +11,34 @@ import (
 )
 
 var (
-	errFakeRadio = errors.New("radio: command timeout")
+	errFakeRig   = errors.New("radio: command timeout")
 	errFakeAudio = errors.New("audio start failed")
 )
 
-// fakeRadio implements RadioIf. The zero value returns empty responses.
-type fakeRadio struct {
+// fakeRig implements RigIf. The zero value returns empty responses.
+type fakeRig struct {
 	sendCmd  string
 	sendResp string
 	sendErr  error
 	pttOn    bool
 	pttErr   error
-	state    protocol.RadioState
+	state    protocol.RigState
 	events   chan string
 }
 
-func (f *fakeRadio) Send(cmd string) (string, error) {
+func (f *fakeRig) Send(cmd string) (string, error) {
 	f.sendCmd = cmd
 	return f.sendResp, f.sendErr
 }
 
-func (f *fakeRadio) SetPTT(on bool) error {
+func (f *fakeRig) SetPTT(on bool) error {
 	f.pttOn = on
 	return f.pttErr
 }
 
-func (f *fakeRadio) GetState() *protocol.RadioState { return &f.state }
+func (f *fakeRig) GetState() *protocol.RigState { return &f.state }
 
-func (f *fakeRadio) Events() <-chan string { return f.events }
+func (f *fakeRig) Events() <-chan string { return f.events }
 
 // fakeAudio implements AudioIf.
 type fakeAudio struct {
@@ -78,36 +78,36 @@ func boolPtr(b bool) *bool { return &b }
 
 func TestDispatch(t *testing.T) {
 	tests := []struct {
-		name  string
-		radio *fakeRadio // nil means radio not connected
+		name string
+		rig  *fakeRig // nil means radio not connected
 		audio *fakeAudio
 		msg   protocol.Message
 		want  []protocol.Message
 	}{
 		{
 			name:  "cat command",
-			radio: &fakeRadio{sendResp: "FA1400000000;"},
+			rig:   &fakeRig{sendResp: "FA1400000000;"},
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "cat", Cmd: "FA;"},
 			want:  []protocol.Message{protocol.MsgCatResp("FA1400000000;")},
 		},
 		{
 			name:  "cat without radio",
-			radio: nil,
+			rig:   nil,
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "cat", Cmd: "FA;"},
 			want:  []protocol.Message{protocol.MsgError("radio not connected")},
 		},
 		{
 			name:  "cat with send error",
-			radio: &fakeRadio{sendErr: errFakeRadio},
+			rig:   &fakeRig{sendErr: errFakeRig},
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "cat", Cmd: "FA;"},
 			want:  []protocol.Message{protocol.MsgError("radio: command timeout")},
 		},
 		{
 			name:  "audio start",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{},
 			msg: protocol.Message{
 				T:      "audio",
@@ -121,52 +121,52 @@ func TestDispatch(t *testing.T) {
 		},
 		{
 			name:  "audio start failure",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{startErr: errFakeAudio},
 			msg:   protocol.Message{T: "audio", Action: "start"},
 			want:  []protocol.Message{protocol.MsgError("audio start failed")},
 		},
 		{
 			name:  "audio stop",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{startEff: &protocol.OpusParams{}},
 			msg:   protocol.Message{T: "audio", Action: "stop"},
 			want:  []protocol.Message{protocol.MsgAudioStatus("stopped")},
 		},
 		{
 			name:  "audio_rx pause",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "audio_rx", Action: "pause"},
 			want:  []protocol.Message{protocol.MsgAudioRxStatus("paused")},
 		},
 		{
 			name:  "audio_rx resume",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{rxPaused: true},
 			msg:   protocol.Message{T: "audio_rx", Action: "resume"},
 			want:  []protocol.Message{protocol.MsgAudioRxStatus("running")},
 		},
 		{
 			name:  "ptt on",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "ptt", On: boolPtr(true)},
 			want:  []protocol.Message{protocol.MsgPTTAck(true)},
 		},
 		{
 			name:  "ptt without radio",
-			radio: nil,
+			rig:   nil,
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "ptt", On: boolPtr(true)},
 			want:  []protocol.Message{protocol.MsgError("radio not connected")},
 		},
 		{
 			name:  "state_req",
-			radio: &fakeRadio{state: protocol.RadioState{FreqA: 14000000}},
+			rig:   &fakeRig{state: protocol.RigState{FreqA: 14000000}},
 			audio: &fakeAudio{rxPaused: true, startEff: &protocol.OpusParams{}},
 			msg:   protocol.Message{T: "state_req"},
-			want: []protocol.Message{protocol.MsgState(&protocol.RadioState{
+			want: []protocol.Message{protocol.MsgState(&protocol.RigState{
 				FreqA:    14000000,
 				AudioOn:  true,
 				RxPaused: true,
@@ -174,7 +174,7 @@ func TestDispatch(t *testing.T) {
 		},
 		{
 			name:  "unknown type sends nothing",
-			radio: &fakeRadio{},
+			rig:   &fakeRig{},
 			audio: &fakeAudio{},
 			msg:   protocol.Message{T: "bogus"},
 			want:  nil,
@@ -183,15 +183,15 @@ func TestDispatch(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var radio RadioIf
-			if tc.radio != nil {
-				radio = tc.radio
+			var rig RigIf
+			if tc.rig != nil {
+				rig = tc.rig
 			}
 			var audio AudioIf
 			if tc.audio != nil {
 				audio = tc.audio
 			}
-			c := &ControlServer{radio: radio, audioMgr: audio, log: zap.NewNop()}
+			c := &ControlServer{rig: rig, audioMgr: audio, log: zap.NewNop()}
 			send, got := collectSend()
 			c.dispatch(tc.msg, send, zap.NewNop())
 			if !reflect.DeepEqual(*got, tc.want) {

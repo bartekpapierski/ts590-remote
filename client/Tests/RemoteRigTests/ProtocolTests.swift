@@ -77,8 +77,8 @@ struct ProtocolTests {
         #expect(p1 != p3)
     }
 
-    @Test func testRadioStateDefaults() {
-        let state = RadioState()
+    @Test func testRigStateDefaults() {
+        let state = RigState()
         #expect(state.freqA == 0)
         #expect(state.freqB == 0)
         #expect(state.mode == "")

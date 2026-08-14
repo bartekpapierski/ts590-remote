@@ -7,7 +7,7 @@ struct OpusParams: Codable, Equatable {
     var bitrate: Int
 }
 
-struct RadioState: Codable {
+struct RigState: Codable {
     var freqA: Int64 = 0
     var freqB: Int64 = 0
     var mode: String = ""
@@ -27,7 +27,7 @@ struct Msg: Codable {
     var token: String? = nil
     var cmd: String? = nil
     var raw: String? = nil
-    var state: RadioState? = nil
+    var state: RigState? = nil
     var action: String? = nil
     var opus: OpusParams? = nil
     var status: String? = nil

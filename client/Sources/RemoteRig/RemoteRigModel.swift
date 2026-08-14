@@ -78,8 +78,9 @@ final class RemoteRigModel: ObservableObject {
     private var downlinkExpected: UInt16 = 0
     private var pendingStateRefresh: Task<Void, Never>?
     private var powerOnSyncPending = false
-    private var powerOnSyncRetriesLeft = 0
-    private static let maxPowerOnSyncRetries = 2
+    private var powerOnSyncProbesLeft = 0
+    private var probeInFlight = false
+    static let maxPowerOnSyncProbes = 5
 
     // Test seam: invoked for every CAT command sent, so tests can assert what
     // reaches the wire without a live connection.
@@ -97,9 +98,8 @@ final class RemoteRigModel: ObservableObject {
     // when the panel re-syncs without a live connection.
     var onSendStateReq: (() -> Void)?
 
-    // The rig's DSP takes seconds to boot after PS1;, so a state refresh sent
-    // immediately would time out server-side. Tests shorten this to avoid
-    // real sleeps.
+    // The rig's DSP takes seconds to boot after PS1;. Sync attempts space
+    // themselves by this much. Tests shorten it to avoid real sleeps.
     var powerOnBootDelay: Duration = .seconds(3)
 
     // MARK: lifecycle
@@ -122,6 +122,7 @@ final class RemoteRigModel: ObservableObject {
         pendingStateRefresh?.cancel()
         pendingStateRefresh = nil
         powerOnSyncPending = false
+        probeInFlight = false
         control?.cancel()
         control = nil
         connected = false
@@ -179,6 +180,10 @@ final class RemoteRigModel: ObservableObject {
             status = "auth failed"
             disconnect()
         case "cat_resp":
+            // TCP ordering guarantees the first reply after the probe is the
+            // probe's. Resolve it on any cat_resp so a nil-raw reply cannot
+            // leave probeInFlight stuck (which would swallow later errors).
+            if probeInFlight { handleProbeResult(true) }
             if let raw = m.raw { appendEvent(raw) }
         case "cat_event":
             if let raw = m.raw { applyEvent(raw); appendEvent(raw) }
@@ -201,7 +206,13 @@ final class RemoteRigModel: ObservableObject {
         case "ptt_ack":
             if let on = m.on { updatePTT(on) }
         case "error":
-            status = "error: \(m.msg ?? "unknown")"
+            // A timed-out probe is expected while the rig boots; it is not a
+            // connection error and must not dirty the status line.
+            if probeInFlight {
+                handleProbeResult(false)
+            } else {
+                status = "error: \(m.msg ?? "unknown")"
+            }
         default:
             break
         }
@@ -227,14 +238,13 @@ final class RemoteRigModel: ObservableObject {
     // frequency read (FA;) or the power read (PS;) failed — freqA == 0 or
     // powerOn == false. The rig can never sit at 0 Hz, and a power-on cycle
     // expects PS1;, so either signals it was still booting when the server
-    // snapshot ran. Retry a bounded number of times instead of leaving the
+    // snapshot ran. Re-probe a bounded number of times instead of leaving the
     // panel stale for however long the boot actually takes.
     private func retryPowerOnSyncIfNeeded(_ s: RigState) {
         guard powerOnSyncPending else { return }
         let rigNotReady = s.freqA == 0 || !s.powerOn
-        if rigNotReady && powerOnSyncRetriesLeft > 0 {
-            powerOnSyncRetriesLeft -= 1
-            scheduleStateRefresh()
+        if rigNotReady {
+            probeAgainOrGiveUp()
         } else {
             powerOnSyncPending = false
         }
@@ -361,7 +371,7 @@ final class RemoteRigModel: ObservableObject {
 
     // Rig power — the PS command. Powering the rig off drops it into standby,
     // so the state refresh is skipped (the rig would not answer for seconds);
-    // powering on re-syncs the panel after the boot window, not immediately.
+    // powering on probes for readiness before syncing the panel.
     func setRigPower(_ on: Bool) {
         pendingStateRefresh?.cancel()
         pendingStateRefresh = nil
@@ -370,24 +380,56 @@ final class RemoteRigModel: ObservableObject {
         sendCat(on ? "PS1;" : "PS0;")
         if on {
             powerOnSyncPending = true
-            powerOnSyncRetriesLeft = Self.maxPowerOnSyncRetries
-            scheduleStateRefresh()
+            // The initial probe is free; the budget counts re-probes.
+            powerOnSyncProbesLeft = Self.maxPowerOnSyncProbes - 1
+            schedulePowerOnProbe()
         } else {
             powerOnSyncPending = false
         }
     }
 
-    // The rig's DSP is still booting right after PS1; — queries sent in that
-    // window time out server-side, one after another (PS; alone waits 10 s).
-    // Wait out the boot window before asking for state.
-    private func scheduleStateRefresh() {
+    // The rig's DSP is still booting right after PS1;. A full state snapshot
+    // (nine queries, ~20 s, stalling the control link) would time out one
+    // query after another, so probe with FA; — a single cheap 1.5 s query and
+    // the very command that fails first — and only fetch state once it answers.
+    private func schedulePowerOnProbe() {
         pendingStateRefresh = Task { @MainActor in
             do {
                 try await Task.sleep(for: powerOnBootDelay)
             } catch {
                 return
             }
+            probeRig()
+        }
+    }
+
+    private func probeRig() {
+        probeInFlight = true
+        sendCat("FA;")
+    }
+
+    private func handleProbeResult(_ answered: Bool) {
+        guard powerOnSyncPending else {
+            probeInFlight = false
+            return
+        }
+        probeInFlight = false
+        if answered {
             refreshState()
+        } else {
+            probeAgainOrGiveUp()
+        }
+    }
+
+    // Shared budget check: probe again while probes remain, else end the
+    // power-on sync cycle and tell the user the rig never came up.
+    private func probeAgainOrGiveUp() {
+        if powerOnSyncProbesLeft > 0 {
+            powerOnSyncProbesLeft -= 1
+            schedulePowerOnProbe()
+        } else {
+            powerOnSyncPending = false
+            status = "power on: rig not responding"
         }
     }
 

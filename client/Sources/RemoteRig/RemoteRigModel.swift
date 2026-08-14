@@ -70,6 +70,14 @@ final class RemoteRigModel: ObservableObject {
     @Published var uplinkPackets = 0
     @Published var showStats = true { didSet { UserDefaults.standard.set(showStats, forKey: "showStats") } }
 
+    // Packet counters update 50x/second while audio flows. Publishing them
+    // directly would re-render the whole window (and the UDP receive handler
+    // lives on the main thread), starving the audio into dropouts. So the hot
+    // counters are private and only published on the ~5 s telemetry cadence.
+    private var downlinkPacketsCount = 0
+    private var downlinkBytesCount = 0
+    private var uplinkPacketsCount = 0
+
     // MARK: connection settings (persisted)
     @Published var host: String = "192.168.1.10" { didSet { UserDefaults.standard.set(host, forKey: "host") } }
     @Published var port: Int = 5900 { didSet { UserDefaults.standard.set(port, forKey: "port") } }
@@ -160,6 +168,9 @@ final class RemoteRigModel: ObservableObject {
         downlinkPackets = 0
         downlinkBytes = 0
         uplinkPackets = 0
+        downlinkPacketsCount = 0
+        downlinkBytesCount = 0
+        uplinkPacketsCount = 0
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port("\(port)")!,
@@ -191,6 +202,9 @@ final class RemoteRigModel: ObservableObject {
         downlinkPackets = 0
         downlinkBytes = 0
         uplinkPackets = 0
+        downlinkPacketsCount = 0
+        downlinkBytesCount = 0
+        uplinkPacketsCount = 0
     }
 
     // stopLocalAudio tears down the local audio engine and the audio UDP
@@ -232,6 +246,14 @@ final class RemoteRigModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+    }
+
+    // Copy the hot packet counters into their @Published view once per
+    // telemetry tick so SwiftUI isn't invalidated per packet.
+    private func publishTelemetry() {
+        downlinkPackets = downlinkPacketsCount
+        downlinkBytes = downlinkBytesCount
+        uplinkPackets = uplinkPacketsCount
     }
 
     private func receiveControl() {
@@ -283,7 +305,10 @@ final class RemoteRigModel: ObservableObject {
         case "ptt_ack":
             if let on = m.on { updatePTT(on) }
         case "stats":
-            if let st = m.stats { serverStats = st }
+            if let st = m.stats {
+                serverStats = st
+                publishTelemetry()
+            }
         case "pong":
             if let t = lastPingSentAt {
                 rttMs = Int(Date().timeIntervalSince(t) * 1000)
@@ -547,11 +572,14 @@ final class RemoteRigModel: ObservableObject {
         let engine = AudioEngine(inputDevice: inID, outputDevice: outID)
         engine.onUplink = { [weak self] packet in
             // The audio tap runs on a background thread; publish on main.
-            Task { @MainActor in self?.uplinkPackets += 1 }
+            Task { @MainActor in self?.uplinkPacketsCount += 1 }
             self?.audioConn?.send(content: packet, completion: .idempotent)
         }
         engine.onStats = { [weak self] s in
-            Task { @MainActor in self?.downlinkStats = s }
+            Task { @MainActor in
+                self?.downlinkStats = s
+                self?.publishTelemetry()
+            }
         }
         audio = engine
     }
@@ -573,8 +601,8 @@ final class RemoteRigModel: ObservableObject {
     private func receiveAudio() {
         audioConn?.receiveMessage { [weak self] data, _, _, _ in
             guard let self, let data, data.count > 2 else { self?.receiveAudio(); return }
-            self.downlinkPackets += 1
-            self.downlinkBytes += data.count - 2
+            self.downlinkPacketsCount += 1
+            self.downlinkBytesCount += data.count - 2
             let seq = UInt16(data[0]) << 8 | UInt16(data[1])
             let opus = data.subdata(in: 2..<data.count)
             self.audio?.pushDownlink(seq: seq, opus: opus)

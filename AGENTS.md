@@ -98,6 +98,11 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
 - PSK lives in `server.yaml` (`network.psk`) and is mirrored in the client UI
   (UserDefaults). Default `"change-me"` — change it for any real use.
 - The client persists host/port/psk and audio device IDs in UserDefaults.
+- **Do not publish per-packet telemetry from the main thread.** The downlink UDP
+  receive handler runs on the main queue; mutating `@Published` counters 50x/s
+  re-renders the window and starves audio into dropouts. Hot counters are
+  private (`downlinkPacketsCount`, …) and published only on the ~5 s telemetry
+  cadence (`publishTelemetry()`).
 - `audio_rx` pause stops downlink (RX) only; control + TX keep working.
 - Server audio start is idempotent: a second `audio start` returns the current
   params with `adjusted=false`.

@@ -33,17 +33,12 @@ final class AudioEngine {
     private var uplinkSeq: UInt16 = 0
     private var downlinkExpected: UInt16 = 0
 
-    // Adaptive downlink jitter: pre-buffer `refillTarget` frames before
-    // rendering, then grow the depth as the stream demands.
-    //
-    // The initial pre-buffer is generous (covers the link latency + typical
-    // jitter); a post-underrun refill is capped so a dropout cannot grow into
-    // an ever-longer silence gap as depth climbs.
+    // Adaptive downlink jitter: pre-buffer `adaptive.depth` frames before
+    // rendering, then grow the depth as the stream demands. The initial
+    // pre-buffer is generous (covers the link latency + typical jitter).
     private static let downlinkStartDepth = 4
     private static let downlinkMaxDepth = 20
-    private static let maxDownlinkRefill = 3
     private var downlinkStarted = false
-    private var refillTarget = AudioEngine.downlinkStartDepth
     private var adaptive = AdaptiveJitter(
         depth: AudioEngine.downlinkStartDepth,
         minDepth: 1,
@@ -191,17 +186,12 @@ final class AudioEngine {
         if downlinkStarted {
             if starved {
                 downlinkDropouts += 1
-                // Drop back into refill mode so the buffer accumulates before
-                // resuming instead of draining straight away — but cap the
-                // refill so a dropout stays a short blip, never a gap that
-                // grows with depth.
+                // Drop back into refill mode so the buffer accumulates back to
+                // the (grown) depth before resuming instead of draining away.
                 downlinkStarted = false
             }
             // Tune depth when playback starved (grow) or persistently over-filled (shrink).
             adaptive.update(isDropout: starved, occupancyFrames: downlinkQueue.count / max(fs, 1))
-            if starved {
-                refillTarget = min(adaptive.depth, Self.maxDownlinkRefill)
-            }
         }
         queueLock.unlock()
     }
@@ -211,10 +201,10 @@ final class AudioEngine {
         let fs = frameSamples
 
         queueLock.lock()
-        // Pre-buffer the refill target before starting to render, so an
+        // Pre-buffer the target depth before starting to render, so an
         // initial burst of jitter is absorbed instead of causing dropouts.
         if !downlinkStarted {
-            if downlinkQueue.count < refillTarget * fs {
+            if downlinkQueue.count < adaptive.depth * fs {
                 queueLock.unlock()
                 fillSilence(list, frameCount: frameCount, channels: channels)
                 return
@@ -277,7 +267,6 @@ final class AudioEngine {
         downlinkQueue.removeAll()
         queueLock.unlock()
         downlinkStarted = false
-        refillTarget = Self.downlinkStartDepth
         adaptive = AdaptiveJitter(
             depth: Self.downlinkStartDepth,
             minDepth: 1,

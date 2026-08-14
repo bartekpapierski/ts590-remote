@@ -116,8 +116,9 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   dropouts trade off automatically on a live link. Two guards stop the depth
   ratcheting into ever-longer gaps: the server resets to its initial depth after
   an idle gap (the mic only flows while transmitting, so an empty run means TX
-  ended, not jitter), and the client caps each post-underrun re-buffer to a
-  short refill so a dropout stays a blip. Server depth/stats are logged every 5 s
+  ended, not jitter). The client re-buffers to its full grown depth on an
+  underrun (capping that would prevent it adapting to the real jitter). Server
+  depth/stats are logged every 5 s
   (`uplink jitter`); the client feeds its downlink stats to the UI (~5 s via
   `AudioEngine.onStats`).
 - The client re-uses the control TCP connection for everything; audio UDP is

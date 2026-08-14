@@ -17,6 +17,13 @@ const (
 	// jbShrinkEvery is how many consecutive over-filled gets trigger a
 	// one-frame shrink of the target depth (~5 s of 20 ms frames).
 	jbShrinkEvery = 250
+	// jbIdleResetGets is how many consecutive empty gets with no incoming
+	// frames reset the target depth to its initial value. The uplink only
+	// carries audio while the operator transmits; an empty run therefore means
+	// the transmission ended, and growing the depth on a transmit gap is a
+	// ratchet with no upside (it would pre-buffer the next transmission for
+	// longer and longer). ~500 ms of 20 ms frames.
+	jbIdleResetGets = 25
 )
 
 // JitterStats is a point-in-time snapshot of the uplink jitter buffer used
@@ -54,11 +61,13 @@ type uplinkJB struct {
 	frameLen int
 	maxAhead int
 
-	depth     int
+	depth     int // current target depth
+	initial   int // target depth to fall back to after an idle gap
 	minDepth  int
 	maxDepth  int
 	started   bool
 	overCount int
+	idle      int // consecutive empty gets with no incoming frames
 
 	dropouts int64
 	skips    int64
@@ -89,6 +98,7 @@ func newUplinkJBDepth(frameLen, depth, minDepth, maxDepth int) *uplinkJB {
 		frameLen: frameLen,
 		maxAhead: jbMaxAhead,
 		depth:    depth,
+		initial:  depth,
 		minDepth: minDepth,
 		maxDepth: maxDepth,
 	}
@@ -108,6 +118,7 @@ func (j *uplinkJB) put(seq uint16, f []int16) {
 	if d > j.maxAhead {
 		return
 	}
+	j.idle = 0
 	j.frames[seq] = f
 }
 
@@ -127,6 +138,7 @@ func (j *uplinkJB) get() ([]int16, bool) {
 
 	if !j.started {
 		if len(j.frames) < j.depth {
+			j.countIdle()
 			return nil, false
 		}
 		j.started = true
@@ -158,6 +170,19 @@ func (j *uplinkJB) get() ([]int16, bool) {
 	j.next++
 	j.checkShrink()
 	return f, true
+}
+
+// countIdle is called for each empty refill get. An extended run with no
+// incoming frames means the operator stopped transmitting; reset the target
+// depth so an idle gap does not ratchet it up (which would pre-buffer the next
+// transmission with more and more silence).
+func (j *uplinkJB) countIdle() {
+	j.idle++
+	if j.idle >= jbIdleResetGets {
+		j.depth = j.initial
+		j.idle = 0
+		j.overCount = 0
+	}
 }
 
 // grow increases the target depth after an underrun so the buffer absorbs

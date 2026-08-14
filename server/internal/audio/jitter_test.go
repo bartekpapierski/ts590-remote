@@ -357,6 +357,42 @@ func TestJitterBufferShrinksDepthWhenOverfilled(t *testing.T) {
 	}
 }
 
+func TestJitterBufferIdleResetDepth(t *testing.T) {
+	jb := newUplinkJBDepth(960, 2, 1, 8)
+	seq := uint16(0)
+	feed := func(n int) {
+		for i := 0; i < n; i++ {
+			jb.put(seq, []int16{int16(seq)})
+			seq++
+		}
+	}
+
+	// A burst that underruns grows the target depth.
+	feed(2)
+	if _, ok := jb.get(); !ok {
+		t.Fatal("first get should play")
+	}
+	if _, ok := jb.get(); !ok {
+		t.Fatal("second get should play")
+	}
+	if _, ok := jb.get(); ok {
+		t.Fatal("expected an underrun after draining the burst")
+	}
+	if d := jb.stats().Depth; d != 3 {
+		t.Fatalf("depth after underrun = %d, want 3", d)
+	}
+
+	// The operator stops transmitting: repeated empty gets must not keep the
+	// grown depth; once the gap is long enough the target resets to its
+	// initial value so the next transmission starts clean.
+	for i := 0; i < jbIdleResetGets; i++ {
+		jb.get()
+	}
+	if d := jb.stats().Depth; d != 2 {
+		t.Errorf("depth after idle = %d, want reset to initial 2", d)
+	}
+}
+
 func TestJitterBufferStats(t *testing.T) {
 	jb := newUplinkJBDepth(960, 2, 1, 8)
 

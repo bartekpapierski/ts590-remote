@@ -111,10 +111,13 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   lost mic frame becomes a silent output frame. It is **adaptive** (both ends):
   the server's `uplinkJB` and the client's `AdaptiveJitter` pre-buffer a target
   depth (initialised from `audio.jitterFrames`, default 2, bounded by
-  `audio.jitterMinFrames`/`audio.jitterMaxFrames`), grow it on silent underruns
-  (and then re-buffer to the grown depth before resuming), and slowly shrink it
-  when the buffer stays over-filled — so latency and dropouts trade off
-  automatically on a live link. Server depth/stats are logged every 5 s
+  `audio.jitterMinFrames`/`audio.jitterMaxFrames`), grow it on silent underruns,
+  and slowly shrink it when the buffer stays over-filled — so latency and
+  dropouts trade off automatically on a live link. Two guards stop the depth
+  ratcheting into ever-longer gaps: the server resets to its initial depth after
+  an idle gap (the mic only flows while transmitting, so an empty run means TX
+  ended, not jitter), and the client caps each post-underrun re-buffer to a
+  short refill so a dropout stays a blip. Server depth/stats are logged every 5 s
   (`uplink jitter`); the client feeds its downlink stats to the UI (~5 s via
   `AudioEngine.onStats`).
 - The client re-uses the control TCP connection for everything; audio UDP is

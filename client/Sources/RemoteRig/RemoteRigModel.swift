@@ -169,7 +169,6 @@ final class RemoteRigModel: ObservableObject {
             Task { @MainActor in self?.handleControlState(st) }
         }
         conn.start(queue: .main)
-        startPing()
     }
 
     func disconnect() {
@@ -251,6 +250,9 @@ final class RemoteRigModel: ObservableObject {
         case "auth_ok":
             status = "connected"
             startAudio()
+            // Only start pinging once authenticated, so the control channel is
+            // never used before the auth handshake (which would fail auth).
+            startPing()
         case "auth_fail":
             status = "auth failed"
             disconnect()

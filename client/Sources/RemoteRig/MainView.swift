@@ -16,7 +16,10 @@ struct MainView: View {
             Divider().overlay(Theme.panelEdge)
             controlsZone
             Spacer(minLength: 0)
-            Divider().overlay(Theme.panelEdge)
+            if model.showStats {
+                StatsView()
+                Divider().overlay(Theme.panelEdge)
+            }
             statusBar
         }
         .background(Theme.background)
@@ -233,6 +236,11 @@ struct MainView: View {
             Button(model.rxPaused ? "Resume Incoming" : "Pause Incoming") { model.toggleRxPause() }
                 .buttonStyle(.bordered)
                 .disabled(!model.audioOn)
+
+            Button(model.showStats ? "Hide Stats" : "Show Stats") { model.showStats.toggle() }
+                .buttonStyle(.bordered)
+                .tint(model.showStats ? Theme.meter : .primary)
+                .help("Toggle the link/audio telemetry panel")
 
             Button("Settings") { showSettings = true }
                 .buttonStyle(.bordered)

@@ -187,3 +187,24 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestMsgStatsRoundTrip(t *testing.T) {
+	m := MsgStats(Stats{Depth: 3, MinDepth: 1, MaxDepth: 64, Dropouts: 7, Skips: 2, Late: 1, Fill: 1, Occupancy: 2})
+	if m.T != "stats" {
+		t.Fatalf("T = %q, want stats", m.T)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Message
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Stats == nil || got.Stats.Depth != 3 || got.Stats.Dropouts != 7 || got.Stats.Occupancy != 2 {
+		t.Fatalf("round-trip stats = %+v", got.Stats)
+	}
+	if s := string(b); contains(s, "depth") == false {
+		t.Errorf("json should contain 'depth'")
+	}
+}

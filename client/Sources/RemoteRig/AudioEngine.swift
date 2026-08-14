@@ -2,8 +2,19 @@ import AVFoundation
 import AudioToolbox
 import OpusWrapper
 
+// DownlinkStats is a snapshot of the client's downlink jitter buffer, surfaced
+// to the UI so the operator can see the audio path adapting to the network.
+struct DownlinkStats {
+    var depth: Int
+    var dropouts: Int
+    var skips: Int
+    var late: Int
+    var fill: Int
+}
+
 final class AudioEngine {
     var onUplink: ((Data) -> Void)?
+    var onStats: ((DownlinkStats) -> Void)?
     var pttActive = false
 
     private let inputDevice: AudioDeviceID?
@@ -113,6 +124,19 @@ final class AudioEngine {
         }
     }
 
+    private func pushStats() {
+        var s: DownlinkStats?
+        queueLock.lock()
+        s = DownlinkStats(
+            depth: adaptive.depth,
+            dropouts: downlinkDropouts,
+            skips: downlinkSkips,
+            late: downlinkLate,
+            fill: downlinkQueue.count / max(frameSamples, 1))
+        queueLock.unlock()
+        if let s { onStats?(s) }
+    }
+
     func pushDownlink(seq: UInt16, opus data: Data) {
         guard let dec = decoder, params != nil else { return }
         if downlinkExpected != 0 {
@@ -132,11 +156,7 @@ final class AudioEngine {
         statsFrames += 1
         if statsFrames >= 250 { // ~5 s at 20 ms frames
             statsFrames = 0
-            var line = ""
-            queueLock.lock()
-            line = "downlink jitter: depth=\(adaptive.depth) dropouts=\(downlinkDropouts) skips=\(downlinkSkips) late=\(downlinkLate) fill=\(downlinkQueue.count / max(frameSamples, 1))"
-            queueLock.unlock()
-            print(line)
+            pushStats()
         }
     }
 

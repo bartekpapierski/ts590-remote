@@ -690,4 +690,20 @@ struct RemoteRigModelTests {
         #expect(sent[0].contains("05330500"))
         #expect(sent[1] == "MD;")
     }
+
+    @Test func testHandleStatsUpdatesServerStats() {
+        let model = RemoteRigModel()
+        model.handleLine(#"{"t":"stats","stats":{"depth":5,"minDepth":1,"maxDepth":64,"dropouts":3,"skips":1,"late":0,"fill":2,"occupancy":4}}"#)
+        #expect(model.serverStats?.depth == 5)
+        #expect(model.serverStats?.dropouts == 3)
+        #expect(model.serverStats?.fill == 2)
+    }
+
+    @Test func testPongComputesRTT() {
+        let model = RemoteRigModel()
+        model.primePingSent(at: Date().addingTimeInterval(-0.250))
+        model.handleLine(#"{"t":"pong"}"#)
+        #expect(model.rttMs != nil)
+        #expect(model.rttMs! >= 200 && model.rttMs! <= 350)
+    }
 }

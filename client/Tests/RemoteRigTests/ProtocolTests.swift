@@ -77,6 +77,18 @@ struct ProtocolTests {
         #expect(p1 != p3)
     }
 
+    @Test func testParseStatsMessage() {
+        let json = #"{"t":"stats","stats":{"depth":3,"minDepth":1,"maxDepth":64,"dropouts":7,"skips":2,"late":1,"fill":1,"occupancy":2}}"#
+        let msg = Msg.parse(json)
+        #expect(msg != nil)
+        #expect(msg?.t == "stats")
+        #expect(msg?.stats?.depth == 3)
+        #expect(msg?.stats?.dropouts == 7)
+        #expect(msg?.stats?.skips == 2)
+        #expect(msg?.stats?.fill == 1)
+        #expect(msg?.stats?.occupancy == 2)
+    }
+
     @Test func testRigStateDefaults() {
         let state = RigState()
         #expect(state.freqA == 0)

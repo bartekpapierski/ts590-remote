@@ -109,3 +109,73 @@ func readAsync(recv func() (protocol.Message, error)) chan protocol.Message {
 	}()
 	return ch
 }
+
+// TestHandlePingPongAndStats exercises the ping/pong round-trip and the
+// periodic uplink-jitter telemetry push through a live control connection.
+func TestHandlePingPongAndStats(t *testing.T) {
+	audio := &fakeAudio{stats: protocol.Stats{Depth: 3, MinDepth: 1, MaxDepth: 64, Dropouts: 7, Skips: 2, Late: 1, Fill: 1, Occupancy: 2}}
+	c := &ControlServer{
+		psk:        "test-psk",
+		rig:        &fakeRig{},
+		audioMgr:   audio,
+		log:        zap.NewNop(),
+		statsEvery: 20 * time.Millisecond,
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	go c.handle(server)
+
+	r := bufio.NewReader(client)
+	send := func(m protocol.Message) error {
+		b, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		_, err = client.Write(append(b, '\n'))
+		return err
+	}
+	recv := func() protocol.Message {
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read failed: %v", err)
+			}
+			var m protocol.Message
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				continue
+			}
+			return m
+		}
+	}
+
+	if err := send(protocol.Message{T: "auth", Token: "test-psk"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := recv(); m.T != "auth_ok" {
+		t.Fatalf("got %+v; want auth_ok", m)
+	}
+
+	if err := send(protocol.Message{T: "ping"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Collect messages until we have seen both a pong and a stats push.
+	sawPong, sawStats := false, false
+	for !sawPong || !sawStats {
+		m := recv()
+		switch m.T {
+		case "pong":
+			sawPong = true
+		case "stats":
+			if m.Stats == nil {
+				t.Fatal("stats message missing payload")
+			}
+			if m.Stats.Depth != 3 || m.Stats.Dropouts != 7 {
+				t.Fatalf("stats payload = %+v; want depth=3 dropouts=7", m.Stats)
+			}
+			sawStats = true
+		}
+	}
+}

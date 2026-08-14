@@ -14,7 +14,8 @@ The server talks CAT over the rig's USB serial port and bridges its USB audio in
 ## Features
 
 - **CAT control** — frequency, mode, power, and PTT commands, with rig state broadcast to the client (`cat_event`).
-- **Live audio** — full-duplex Opus streaming (20 ms frames, 48 kHz mono by default), jitter-buffered uplink on the client side, and a downlink pause (`audio_rx`) that leaves control + TX running.
+- **Live audio** — full-duplex Opus streaming (20 ms frames, 48 kHz mono by default), adaptive jitter buffers on both ends (grow on dropouts, shrink when over-filled), and a downlink pause (`audio_rx`) that leaves control + TX running.
+- **Live telemetry** — a toggleable stats panel shows network (link/RTT/packet counts) and streaming/buffer conditions for both the downlink (RX) and uplink (TX-to-rig) audio paths; server uplink stats are pushed over the control channel every 5 s.
 - **Authentication** — PSK handshake before any control or audio traffic is accepted.
 - **Portable** — the server ships as a single static-ish Go binary, a headless build (no PortAudio/Opus), and a Docker image; the client is a standard SwiftPM package.
 

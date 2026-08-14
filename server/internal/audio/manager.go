@@ -104,3 +104,24 @@ func (m *Manager) PushUplink(seq uint16, data []byte) {
 		st.PushUplink(seq, data)
 	}
 }
+
+// Stats returns the uplink jitter buffer telemetry for the control channel.
+func (m *Manager) Stats() protocol.Stats {
+	m.mu.Lock()
+	st := m.stream
+	m.mu.Unlock()
+	if st == nil {
+		return protocol.Stats{}
+	}
+	j := st.UplinkStats()
+	return protocol.Stats{
+		Depth:     j.Depth,
+		MinDepth:  j.MinDepth,
+		MaxDepth:  j.MaxDepth,
+		Dropouts:  j.Dropouts,
+		Skips:     j.Skips,
+		Late:      j.Late,
+		Fill:      j.Fill,
+		Occupancy: j.Occupancy,
+	}
+}

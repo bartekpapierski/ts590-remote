@@ -22,6 +22,20 @@ struct RigState: Codable {
     var powerOn: Bool = false
 }
 
+// JitterStats is the uplink (rig-path) jitter buffer telemetry the server
+// pushes periodically, plus the same shape reused client-side for the
+// downlink buffer it renders.
+struct JitterStats: Codable {
+    var depth: Int = 0
+    var minDepth: Int = 0
+    var maxDepth: Int = 0
+    var dropouts: Int64 = 0
+    var skips: Int64 = 0
+    var late: Int64 = 0
+    var fill: Int = 0
+    var occupancy: Int = 0
+}
+
 struct Msg: Codable {
     var t: String
     var token: String? = nil
@@ -39,6 +53,7 @@ struct Msg: Codable {
     var channels: Int? = nil
     var frameMs: Int? = nil
     var bitrate: Int? = nil
+    var stats: JitterStats? = nil
     var msg: String? = nil
 
     func jsonLine() -> Data {

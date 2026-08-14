@@ -84,7 +84,12 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   `auth_ok` / `auth_fail`.
 - Key message types: `auth_ok`, `auth_fail`, `cat`/`cat_resp`/`cat_event`,
   `state`, `audio` (start/stop), `audio_params`, `audio_rx`, `ptt`/`ptt_ack`,
-  `state_req`, `error`.
+  `state_req`, `ping`/`pong` (control-channel RTT probe), `stats`, `error`.
+- `stats` (server→client, pushed every 5 s) carries the uplink jitter buffer
+  telemetry (`depth`, `minDepth`, `maxDepth`, `dropouts`, `skips`, `late`,
+  `fill`, `occupancy`). The client shows it alongside its own local downlink
+  jitter stats in a toggleable panel (`StatsView`, "Show/Hide Stats" button,
+  persisted in UserDefaults as `showStats`).
 - The client opens the audio UDP socket to `port + 1` (control is `port`, default
   5900 → audio 5901). It sends a 2-byte hello so the server learns its address.
 
@@ -105,7 +110,8 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   (and then re-buffer to the grown depth before resuming), and slowly shrink it
   when the buffer stays over-filled — so latency and dropouts trade off
   automatically on a live link. Server depth/stats are logged every 5 s
-  (`uplink jitter`); the client prints `downlink jitter` every ~5 s.
+  (`uplink jitter`); the client feeds its downlink stats to the UI (~5 s via
+  `AudioEngine.onStats`).
 - The client re-uses the control TCP connection for everything; audio UDP is
   opened lazily only when audio starts.
 - `setFreq` clamps negative frequencies to 0 (both `freqA` and the CAT string).

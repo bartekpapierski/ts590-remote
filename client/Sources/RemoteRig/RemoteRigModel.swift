@@ -61,6 +61,15 @@ final class RemoteRigModel: ObservableObject {
     @Published var status = "disconnected"
     @Published var events: [String] = []
 
+    // MARK: link / streaming telemetry
+    @Published var serverStats: JitterStats?
+    @Published var downlinkStats: DownlinkStats?
+    @Published var rttMs: Int?
+    @Published var downlinkPackets = 0
+    @Published var downlinkBytes = 0
+    @Published var uplinkPackets = 0
+    @Published var showStats = true { didSet { UserDefaults.standard.set(showStats, forKey: "showStats") } }
+
     // MARK: connection settings (persisted)
     @Published var host: String = "192.168.1.10" { didSet { UserDefaults.standard.set(host, forKey: "host") } }
     @Published var port: Int = 5900 { didSet { UserDefaults.standard.set(port, forKey: "port") } }
@@ -92,6 +101,7 @@ final class RemoteRigModel: ObservableObject {
         if d.object(forKey: "opusFrameMs") != nil { opusFrameMs = d.integer(forKey: "opusFrameMs") }
         if d.object(forKey: "opusBitrate") != nil { opusBitrate = d.integer(forKey: "opusBitrate") }
         if d.object(forKey: "band60Freq") != nil { band60Freq = Int64(d.integer(forKey: "band60Freq")) }
+        if d.object(forKey: "showStats") != nil { showStats = d.bool(forKey: "showStats") }
         validateDeviceIDs(input: AudioDevices.inputDevices, output: AudioDevices.outputDevices)
     }
 
@@ -111,6 +121,13 @@ final class RemoteRigModel: ObservableObject {
     private var powerOnSyncProbesLeft = 0
     private var probeInFlight = false
     static let maxPowerOnSyncProbes = 5
+
+    private var pingTask: Task<Void, Never>?
+    private var lastPingSentAt: Date?
+
+    // Test seam: record the timestamp a ping was sent so pong RTT can be
+    // asserted without a live connection.
+    func primePingSent(at: Date) { lastPingSentAt = at }
 
     // Test seam: invoked for every CAT command sent, so tests can assert what
     // reaches the wire without a live connection.
@@ -137,6 +154,12 @@ final class RemoteRigModel: ObservableObject {
         disconnect()
         activeVFO = .a
         status = "connecting…"
+        serverStats = nil
+        downlinkStats = nil
+        rttMs = nil
+        downlinkPackets = 0
+        downlinkBytes = 0
+        uplinkPackets = 0
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port("\(port)")!,
@@ -146,6 +169,7 @@ final class RemoteRigModel: ObservableObject {
             Task { @MainActor in self?.handleControlState(st) }
         }
         conn.start(queue: .main)
+        startPing()
     }
 
     func disconnect() {
@@ -153,12 +177,21 @@ final class RemoteRigModel: ObservableObject {
         pendingStateRefresh = nil
         powerOnSyncPending = false
         probeInFlight = false
+        pingTask?.cancel()
+        pingTask = nil
+        lastPingSentAt = nil
         control?.cancel()
         control = nil
         connected = false
         status = "disconnected"
         updatePTT(false)
         stopLocalAudio()
+        serverStats = nil
+        downlinkStats = nil
+        rttMs = nil
+        downlinkPackets = 0
+        downlinkBytes = 0
+        uplinkPackets = 0
     }
 
     // stopLocalAudio tears down the local audio engine and the audio UDP
@@ -187,6 +220,18 @@ final class RemoteRigModel: ObservableObject {
             connected = false
         default:
             break
+        }
+    }
+
+    // Ping the control channel periodically so the UI can show link latency.
+    private func startPing() {
+        pingTask?.cancel()
+        pingTask = Task { @MainActor in
+            while !Task.isCancelled {
+                lastPingSentAt = Date()
+                send(Msg(t: "ping"))
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
     }
 
@@ -235,6 +280,12 @@ final class RemoteRigModel: ObservableObject {
             if m.adjusted == true { status = "audio: params adjusted by server" }
         case "ptt_ack":
             if let on = m.on { updatePTT(on) }
+        case "stats":
+            if let st = m.stats { serverStats = st }
+        case "pong":
+            if let t = lastPingSentAt {
+                rttMs = Int(Date().timeIntervalSince(t) * 1000)
+            }
         case "error":
             // A timed-out probe is expected while the rig boots; it is not a
             // connection error and must not dirty the status line.
@@ -493,7 +544,12 @@ final class RemoteRigModel: ObservableObject {
         let outID: AudioDeviceID? = outputDeviceID != 0 ? AudioDeviceID(outputDeviceID) : nil
         let engine = AudioEngine(inputDevice: inID, outputDevice: outID)
         engine.onUplink = { [weak self] packet in
+            // The audio tap runs on a background thread; publish on main.
+            Task { @MainActor in self?.uplinkPackets += 1 }
             self?.audioConn?.send(content: packet, completion: .idempotent)
+        }
+        engine.onStats = { [weak self] s in
+            Task { @MainActor in self?.downlinkStats = s }
         }
         audio = engine
     }
@@ -515,6 +571,8 @@ final class RemoteRigModel: ObservableObject {
     private func receiveAudio() {
         audioConn?.receiveMessage { [weak self] data, _, _, _ in
             guard let self, let data, data.count > 2 else { self?.receiveAudio(); return }
+            self.downlinkPackets += 1
+            self.downlinkBytes += data.count - 2
             let seq = UInt16(data[0]) << 8 | UInt16(data[1])
             let opus = data.subdata(in: 2..<data.count)
             self.audio?.pushDownlink(seq: seq, opus: opus)

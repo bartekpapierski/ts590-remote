@@ -12,15 +12,15 @@ type Message struct {
 	Cmd string `json:"cmd,omitempty"`
 
 	// generic response / event payload
-	Raw  string `json:"raw,omitempty"`
+	Raw   string    `json:"raw,omitempty"`
 	State *RigState `json:"state,omitempty"`
 
 	// audio control
-	Action  string      `json:"action,omitempty"`
-	Opus    *OpusParams `json:"opus,omitempty"`
-	Status  string      `json:"status,omitempty"`
-	Dir     string      `json:"dir,omitempty"`
-	Adjusted bool      `json:"adjusted,omitempty"`
+	Action   string      `json:"action,omitempty"`
+	Opus     *OpusParams `json:"opus,omitempty"`
+	Status   string      `json:"status,omitempty"`
+	Dir      string      `json:"dir,omitempty"`
+	Adjusted bool        `json:"adjusted,omitempty"`
 
 	// ptt
 	On *bool `json:"on,omitempty"`
@@ -33,6 +33,9 @@ type Message struct {
 	Channels   int `json:"channels,omitempty"`
 	FrameMs    int `json:"frameMs,omitempty"`
 	Bitrate    int `json:"bitrate,omitempty"`
+
+	// stats (uplink jitter buffer telemetry pushed to the client)
+	Stats *Stats `json:"stats,omitempty"`
 
 	// error
 	Msg string `json:"msg,omitempty"`
@@ -48,10 +51,10 @@ type OpusParams struct {
 
 // RigState is a snapshot of the rig used for the `state` message.
 type RigState struct {
-	FreqA   int64  `json:"freqA"`
-	FreqB   int64  `json:"freqB"`
-	Mode    string `json:"mode"`
-	PTT     bool   `json:"ptt"`
+	FreqA    int64  `json:"freqA"`
+	FreqB    int64  `json:"freqB"`
+	Mode     string `json:"mode"`
+	PTT      bool   `json:"ptt"`
 	AF       int    `json:"af"`
 	RF       int    `json:"rf"`
 	Power    int    `json:"power"`
@@ -62,14 +65,28 @@ type RigState struct {
 	PowerOn  bool   `json:"powerOn"`
 }
 
+// Stats is the uplink (mic) jitter buffer telemetry the server pushes to the
+// client every few seconds. It lets the operator see the audio path adapting
+// to live network conditions.
+type Stats struct {
+	Depth     int   `json:"depth"`
+	MinDepth  int   `json:"minDepth"`
+	MaxDepth  int   `json:"maxDepth"`
+	Dropouts  int64 `json:"dropouts"`
+	Skips     int64 `json:"skips"`
+	Late      int64 `json:"late"`
+	Fill      int   `json:"fill"`
+	Occupancy int   `json:"occupancy"`
+}
+
 // Builders ---------------------------------------------------------------
 
-func MsgAuthOK() Message       { return Message{T: "auth_ok"} }
-func MsgAuthFail() Message      { return Message{T: "auth_fail"} }
+func MsgAuthOK() Message          { return Message{T: "auth_ok"} }
+func MsgAuthFail() Message        { return Message{T: "auth_fail"} }
 func MsgError(msg string) Message { return Message{T: "error", Msg: msg} }
 
-func MsgCatResp(raw string) Message    { return Message{T: "cat_resp", Raw: raw} }
-func MsgCatEvent(raw string) Message   { return Message{T: "cat_event", Raw: raw} }
+func MsgCatResp(raw string) Message  { return Message{T: "cat_resp", Raw: raw} }
+func MsgCatEvent(raw string) Message { return Message{T: "cat_event", Raw: raw} }
 
 func MsgState(s *RigState) Message { return Message{T: "state", State: s} }
 
@@ -81,7 +98,7 @@ func MsgAudioRxStatus(status string) Message {
 
 func MsgAudioParams(p *OpusParams, adjusted bool) Message {
 	return Message{
-		T:        "audio_params",
+		T:          "audio_params",
 		SampleRate: p.SampleRate,
 		Channels:   p.Channels,
 		FrameMs:    p.FrameMs,
@@ -91,3 +108,7 @@ func MsgAudioParams(p *OpusParams, adjusted bool) Message {
 }
 
 func MsgPTTAck(on bool) Message { return Message{T: "ptt_ack", On: &on} }
+
+func MsgStats(s Stats) Message { return Message{T: "stats", Stats: &s} }
+
+func MsgPong() Message { return Message{T: "pong"} }

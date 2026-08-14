@@ -31,3 +31,4 @@ func (m *Manager) Running() bool                  { return false }
 func (m *Manager) PauseRx(pause bool)             {}
 func (m *Manager) RxPaused() bool                 { return false }
 func (m *Manager) PushUplink(seq uint16, data []byte) {}
+func (m *Manager) Stats() protocol.Stats          { return protocol.Stats{} }

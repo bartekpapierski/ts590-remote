@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/bartek/ts590-remote/server/internal/config"
 	"github.com/bartek/ts590-remote/server/internal/protocol"
 )
+
+// statsInterval is how often the server pushes uplink jitter telemetry to a
+// connected client.
+const statsInterval = 5 * time.Second
 
 // RigIf is the CAT-control surface ControlServer dispatches against. It is
 // satisfied by *radio.Radio in production and by fakes in tests.
@@ -30,25 +35,28 @@ type AudioIf interface {
 	PauseRx(pause bool)
 	RxPaused() bool
 	PushUplink(seq uint16, data []byte)
+	Stats() protocol.Stats
 }
 
 // ControlServer accepts TCP control connections, authenticates with the
 // pre-shared key, and dispatches CAT / audio / PTT / state messages.
 type ControlServer struct {
-	cfg      config.NetworkConfig
-	psk      string
-	rig      RigIf
-	audioMgr AudioIf
-	log      *zap.Logger
+	cfg        config.NetworkConfig
+	psk        string
+	rig        RigIf
+	audioMgr   AudioIf
+	log        *zap.Logger
+	statsEvery time.Duration
 }
 
 func NewControlServer(cfg config.NetworkConfig, rig RigIf, mgr AudioIf, log *zap.Logger) *ControlServer {
 	return &ControlServer{
-		cfg:      cfg,
-		psk:      cfg.PSK,
-		rig:      rig,
-		audioMgr: mgr,
-		log:      log,
+		cfg:        cfg,
+		psk:        cfg.PSK,
+		rig:        rig,
+		audioMgr:   mgr,
+		log:        log,
+		statsEvery: statsInterval,
 	}
 }
 
@@ -129,6 +137,26 @@ func (c *ControlServer) handle(conn net.Conn) {
 		}()
 	}
 	defer close(evDone)
+
+	// push uplink jitter telemetry to this client periodically
+	statsDone := make(chan struct{})
+	every := c.statsEvery
+	if every <= 0 {
+		every = statsInterval
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-statsDone:
+				return
+			case <-t.C:
+				send(protocol.MsgStats(c.audioMgr.Stats()))
+			}
+		}
+	}()
+	defer close(statsDone)
 
 	for {
 		line, err := r.ReadString('\n')
@@ -217,6 +245,10 @@ func (c *ControlServer) dispatch(msg protocol.Message, send func(protocol.Messag
 		st.AudioOn = c.audioMgr.Running()
 		st.RxPaused = c.audioMgr.RxPaused()
 		send(protocol.MsgState(st))
+
+	case "ping":
+		// Round-trip probe so the client can measure control-channel latency.
+		send(protocol.MsgPong())
 
 	default:
 		log.Warn("unknown message type", zap.String("t", msg.T))

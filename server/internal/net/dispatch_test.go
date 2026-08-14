@@ -48,6 +48,7 @@ type fakeAudio struct {
 	startErr error
 	rxPaused bool
 	uplink   []byte
+	stats    protocol.Stats
 }
 
 func (f *fakeAudio) Start(req *protocol.OpusParams) (*protocol.OpusParams, bool, error) {
@@ -68,6 +69,8 @@ func (f *fakeAudio) RxPaused() bool { return f.rxPaused }
 
 func (f *fakeAudio) PushUplink(seq uint16, data []byte) { f.uplink = data }
 
+func (f *fakeAudio) Stats() protocol.Stats { return f.stats }
+
 // collectSend returns a send func that appends every message it receives.
 func collectSend() (func(protocol.Message), *[]protocol.Message) {
 	var out []protocol.Message
@@ -78,8 +81,8 @@ func boolPtr(b bool) *bool { return &b }
 
 func TestDispatch(t *testing.T) {
 	tests := []struct {
-		name string
-		rig  *fakeRig // nil means radio not connected
+		name  string
+		rig   *fakeRig // nil means radio not connected
 		audio *fakeAudio
 		msg   protocol.Message
 		want  []protocol.Message

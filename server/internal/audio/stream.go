@@ -225,6 +225,9 @@ func (s *Stream) PushUplink(seq uint16, data []byte) {
 	s.uplink.put(seq, pcm)
 }
 
+// UplinkStats returns a snapshot of the uplink jitter buffer for telemetry.
+func (s *Stream) UplinkStats() JitterStats { return s.uplink.stats() }
+
 func (s *Stream) callback(in, out []float32, _ portaudio.StreamCallbackTimeInfo, _ portaudio.StreamCallbackFlags) {
 	if len(in) > 0 {
 		pcm := f32ToI16(in, s.gain)

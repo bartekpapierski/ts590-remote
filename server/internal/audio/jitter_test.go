@@ -287,77 +287,7 @@ func TestJitterBufferPreBuffersToDepth(t *testing.T) {
 	}
 }
 
-func TestJitterBufferGrowsDepthOnUnderrun(t *testing.T) {
-	jb := newUplinkJBDepth(960, 2, 1, 4)
-	seq := uint16(0)
-	feed := func(n int) {
-		for i := 0; i < n; i++ {
-			jb.put(seq, []int16{int16(seq)})
-			seq++
-		}
-	}
-
-	// Each cycle: refill to the current target depth, drain through it, then
-	// hit a true underrun, which grows the target depth (capped at max).
-	for want := 2; want <= 4; want++ {
-		feed(jb.stats().Depth)
-		for i := 0; i < want; i++ {
-			if _, ok := jb.get(); !ok {
-				t.Fatalf("depth %d: expected %d frames to play, underran at %d", jb.stats().Depth, want, i)
-			}
-		}
-		if _, ok := jb.get(); ok {
-			t.Fatal("expected a true underrun after draining the refilled depth")
-		}
-		expected := want + 1
-		if expected > 4 {
-			expected = 4
-		}
-		if d := jb.stats().Depth; d != expected {
-			t.Errorf("Depth after draining %d = %d, want %d", want, d, expected)
-		}
-	}
-}
-
-func TestJitterBufferShrinksDepthWhenOverfilled(t *testing.T) {
-	jb := newUplinkJBDepth(960, 5, 1, 8)
-
-	// Preload 40 frames so playback has plenty to draw from.
-	const preload = 40
-	for i := 0; i < preload; i++ {
-		jb.put(uint16(i), []int16{int16(i)})
-	}
-	if d := jb.stats().Depth; d != 5 {
-		t.Fatalf("initial Depth = %d, want 5", d)
-	}
-
-	// Drain steadily while topping the buffer up just ahead of the play
-	// head, keeping it persistently over-filled (no underruns, no lost
-	// frames). The target depth should be recovered.
-	next := 0
-	for k := 0; k < 300; k++ {
-		for t := 0; t < 5; t++ {
-			seq := next + preload + t
-			jb.put(uint16(seq), []int16{int16(seq)})
-		}
-		if _, ok := jb.get(); !ok {
-			t.Fatalf("get() #%d underran unexpectedly", k)
-		}
-		next++
-	}
-	st := jb.stats()
-	if st.Depth >= 5 {
-		t.Errorf("Depth = %d, want shrunk below 5", st.Depth)
-	}
-	if st.Dropouts != 0 {
-		t.Errorf("Dropouts = %d, want 0", st.Dropouts)
-	}
-	if st.Skips != 0 {
-		t.Errorf("Skips = %d, want 0", st.Skips)
-	}
-}
-
-func TestJitterBufferIdleResetDepth(t *testing.T) {
+func TestJitterBufferDoesNotGrowOnUnderrun(t *testing.T) {
 	jb := newUplinkJBDepth(960, 2, 1, 8)
 	seq := uint16(0)
 	feed := func(n int) {
@@ -367,7 +297,7 @@ func TestJitterBufferIdleResetDepth(t *testing.T) {
 		}
 	}
 
-	// A burst that underruns grows the target depth.
+	// Drain a clean burst, then hit a true underrun.
 	feed(2)
 	if _, ok := jb.get(); !ok {
 		t.Fatal("first get should play")
@@ -378,18 +308,61 @@ func TestJitterBufferIdleResetDepth(t *testing.T) {
 	if _, ok := jb.get(); ok {
 		t.Fatal("expected an underrun after draining the burst")
 	}
-	if d := jb.stats().Depth; d != 3 {
-		t.Fatalf("depth after underrun = %d, want 3", d)
+	if d := jb.stats().Depth; d != 2 {
+		t.Errorf("Depth after underrun = %d, want fixed 2 (underrun must not grow it)", d)
 	}
 
-	// The operator stops transmitting: repeated empty gets must not keep the
-	// grown depth; once the gap is long enough the target resets to its
-	// initial value so the next transmission starts clean.
+	// Play-through: frames that arrive after the gap play immediately; there
+	// is no re-buffer pause waiting for the full depth again.
+	jb.put(2, []int16{9})
+	if f, ok := jb.get(); !ok || f[0] != 9 {
+		t.Errorf("get() after gap = %v, %v; want [9] played straight away", f, ok)
+	}
+}
+
+func TestJitterBufferReArmsPreBufferAfterIdle(t *testing.T) {
+	jb := newUplinkJBDepth(960, 2, 1, 8)
+	seq := uint16(0)
+	feed := func(n int) {
+		for i := 0; i < n; i++ {
+			jb.put(seq, []int16{int16(seq)})
+			seq++
+		}
+	}
+
+	feed(2)
+	if _, ok := jb.get(); !ok {
+		t.Fatal("first get should play")
+	}
+	if _, ok := jb.get(); !ok {
+		t.Fatal("second get should play")
+	}
+	if _, ok := jb.get(); ok {
+		t.Fatal("expected an underrun after draining the burst")
+	}
+	if d := jb.stats().Depth; d != 2 {
+		t.Fatalf("Depth = %d, want fixed 2", d)
+	}
+
+	// The operator stops transmitting: an extended run with no frames re-arms
+	// the pre-buffer so the next transmission starts clean.
 	for i := 0; i < jbIdleResetGets; i++ {
 		jb.get()
 	}
-	if d := jb.stats().Depth; d != 2 {
-		t.Errorf("depth after idle = %d, want reset to initial 2", d)
+	if jb.stats().Started {
+		t.Error("Started should be false after an idle gap (pre-buffer re-armed)")
+	}
+
+	// Next burst must pre-buffer again: a single frame is held, not played.
+	jb.put(seq, []int16{42})
+	seq++
+	if _, ok := jb.get(); ok {
+		t.Error("get() should hold the first frame of a new burst while below depth")
+	}
+	jb.put(seq, []int16{43})
+	seq++
+	if f, ok := jb.get(); !ok || f[0] != 42 {
+		t.Errorf("get() = %v, %v; want [42] once depth is reached", f, ok)
 	}
 }
 

@@ -33,16 +33,14 @@ final class AudioEngine {
     private var uplinkSeq: UInt16 = 0
     private var downlinkExpected: UInt16 = 0
 
-    // Adaptive downlink jitter: pre-buffer `adaptive.depth` frames before
-    // rendering, then grow the depth as the stream demands. The initial
-    // pre-buffer is generous (covers the link latency + typical jitter).
-    private static let downlinkStartDepth = 4
-    private static let downlinkMaxDepth = 20
+    // Downlink jitter handling. The buffer pre-buffers `downlinkDepth` frames
+    // once at start, then plays through in real time: an underrun is concealed
+    // with a single PLC frame instead of pausing to re-buffer. This keeps a
+    // dropout a short blip regardless of how long the stream runs — growing a
+    // target depth and pausing to refill just adds latency (and longer pauses)
+    // without fixing the underlying clock drift.
+    private static let downlinkDepth = 5
     private var downlinkStarted = false
-    private var adaptive = AdaptiveJitter(
-        depth: AudioEngine.downlinkStartDepth,
-        minDepth: 1,
-        maxDepth: AudioEngine.downlinkMaxDepth)
     private var downlinkDropouts = 0
     private var downlinkSkips = 0
     private var downlinkLate = 0
@@ -134,7 +132,7 @@ final class AudioEngine {
         var s: DownlinkStats?
         queueLock.lock()
         s = DownlinkStats(
-            depth: adaptive.depth,
+            depth: Self.downlinkDepth,
             dropouts: downlinkDropouts,
             skips: downlinkSkips,
             late: downlinkLate,
@@ -173,7 +171,15 @@ final class AudioEngine {
     private func enqueue(_ samples: [Int16]) {
         let fs = frameSamples
         queueLock.lock()
-        let starved = downlinkStarted && downlinkQueue.isEmpty
+        if downlinkStarted && downlinkQueue.isEmpty {
+            // Playback starved: the sender's clock is running behind ours.
+            // Conceal the gap with one PLC frame and keep playing — pausing to
+            // re-buffer would turn the dropout into a growing silence gap.
+            downlinkDropouts += 1
+            if let plc = decoder?.decodePLC() {
+                downlinkQueue.append(contentsOf: plc)
+            }
+        }
         downlinkQueue.append(contentsOf: samples)
         let bufferCap = fs * 20
         if downlinkQueue.count > bufferCap {
@@ -183,16 +189,6 @@ final class AudioEngine {
             }
             downlinkQueue.removeFirst(downlinkQueue.count - bufferCap)
         }
-        if downlinkStarted {
-            if starved {
-                downlinkDropouts += 1
-                // Drop back into refill mode so the buffer accumulates back to
-                // the (grown) depth before resuming instead of draining away.
-                downlinkStarted = false
-            }
-            // Tune depth when playback starved (grow) or persistently over-filled (shrink).
-            adaptive.update(isDropout: starved, occupancyFrames: downlinkQueue.count / max(fs, 1))
-        }
         queueLock.unlock()
     }
 
@@ -201,10 +197,10 @@ final class AudioEngine {
         let fs = frameSamples
 
         queueLock.lock()
-        // Pre-buffer the target depth before starting to render, so an
-        // initial burst of jitter is absorbed instead of causing dropouts.
+        // Pre-buffer once at start so an initial burst of jitter is absorbed;
+        // afterwards we play through in real time.
         if !downlinkStarted {
-            if downlinkQueue.count < adaptive.depth * fs {
+            if downlinkQueue.count < Self.downlinkDepth * fs {
                 queueLock.unlock()
                 fillSilence(list, frameCount: frameCount, channels: channels)
                 return
@@ -267,10 +263,6 @@ final class AudioEngine {
         downlinkQueue.removeAll()
         queueLock.unlock()
         downlinkStarted = false
-        adaptive = AdaptiveJitter(
-            depth: Self.downlinkStartDepth,
-            minDepth: 1,
-            maxDepth: Self.downlinkMaxDepth)
         downlinkDropouts = 0
         downlinkSkips = 0
         downlinkLate = 0

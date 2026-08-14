@@ -12,9 +12,10 @@ audio:
   channels: 1
   opusFrameMs: 20
   opusBitrate: 48000
-  # initial uplink jitter depth (frames); adapts automatically between the
-  # min and max below based on dropouts and buffer fill
+  # uplink jitter pre-buffer depth (frames); the buffer holds this many frames
+  # at the start of a transmission, then plays through in real time
   jitterFrames: 2
+  # bounds the configured depth is clamped to
   jitterMinFrames: 1
   jitterMaxFrames: 64
 

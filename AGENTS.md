@@ -106,21 +106,20 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
 - `audio_rx` pause stops downlink (RX) only; control + TX keep working.
 - Server audio start is idempotent: a second `audio start` returns the current
   params with `adjusted=false`.
-- The uplink jitter buffer drops late frames and skips lost ones (jumps the play
-  head to the oldest buffered frame); there is no packet-loss concealment, so a
-  lost mic frame becomes a silent output frame. It is **adaptive** (both ends):
-  the server's `uplinkJB` and the client's `AdaptiveJitter` pre-buffer a target
-  depth (initialised from `audio.jitterFrames`, default 2, bounded by
-  `audio.jitterMinFrames`/`audio.jitterMaxFrames`), grow it on silent underruns,
-  and slowly shrink it when the buffer stays over-filled — so latency and
-  dropouts trade off automatically on a live link. Two guards stop the depth
-  ratcheting into ever-longer gaps: the server resets to its initial depth after
-  an idle gap (the mic only flows while transmitting, so an empty run means TX
-  ended, not jitter). The client re-buffers to its full grown depth on an
-  underrun (capping that would prevent it adapting to the real jitter). Server
-  depth/stats are logged every 5 s
-  (`uplink jitter`); the client feeds its downlink stats to the UI (~5 s via
-  `AudioEngine.onStats`).
+- The jitter buffers drop late frames and skip lost ones (jumping the play
+  head to the oldest buffered frame); there is no packet-loss concealment on the
+  server, so a lost mic frame becomes a silent output frame (the client does
+  conceal gaps with Opus PLC). They are **fixed-depth** (not adaptive — see
+  below): the server's `uplinkJB` and the client's downlink buffer pre-buffer
+  the configured depth at the start of a stream (server: `audio.jitterFrames`,
+  default 2; client: 5 frames) then play through in real time. Growing the
+  depth on an underrun does not fix clock drift — it only adds latency and
+  makes each dropout pause longer — so an underrun plays one frame of silence
+  and keeps going. Two guards keep behavior sane: the server re-arms its
+  pre-buffer after an idle gap (the mic only flows while transmitting, so an
+  empty run means TX ended, not jitter), and the client conceals its gaps with
+  PLC. Server depth/stats are logged every 5 s (`uplink jitter`); the client
+  feeds its downlink stats to the UI (~5 s via `AudioEngine.onStats`).
 - The client re-uses the control TCP connection for everything; audio UDP is
   opened lazily only when audio starts.
 - `setFreq` clamps negative frequencies to 0 (both `freqA` and the CAT string).

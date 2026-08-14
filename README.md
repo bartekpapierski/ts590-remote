@@ -75,9 +75,9 @@ docker run -v /dev/ttyACM0:/dev/ttyACM0 -p 5900:5900/tcp -p 5901:5901/udp ts590-
 | `audio.channels` | `1` | Channel count |
 | `audio.opusFrameMs` | `20` | Opus frame size (ms) |
 | `audio.opusBitrate` | `48000` | Opus bitrate (bps) |
-| `audio.jitterFrames` | `2` | Initial uplink jitter buffer depth (frames) |
-| `audio.jitterMinFrames` | `1` | Lower bound the uplink jitter depth adapts to |
-| `audio.jitterMaxFrames` | `64` | Upper bound the uplink jitter depth adapts to |
+| `audio.jitterFrames` | `2` | Uplink jitter buffer pre-buffer depth (frames) |
+| `audio.jitterMinFrames` | `1` | Lower bound the uplink jitter depth is clamped to |
+| `audio.jitterMaxFrames` | `64` | Upper bound the uplink jitter depth is clamped to |
 | `network.controlAddr` | `0.0.0.0:5900` | Control TCP listen address |
 | `network.audioAddr` | `0.0.0.0:5901` | Audio UDP listen address |
 | `network.psk` | `change-me` | Pre-shared key; **change it for any real use** |

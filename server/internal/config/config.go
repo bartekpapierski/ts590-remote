@@ -26,8 +26,9 @@ type AudioConfig struct {
 	OpusFrameMs  int     `yaml:"opusFrameMs"`
 	OpusBitrate  int     `yaml:"opusBitrate"`
 	JitterFrames int     `yaml:"jitterFrames"`
-	// JitterMinFrames / JitterMaxFrames bound the adaptive uplink jitter
-	// buffer depth. The buffer starts at JitterFrames and adapts within these.
+	// JitterMinFrames / JitterMaxFrames bound the uplink jitter pre-buffer
+	// depth. The buffer pre-buffers JitterFrames frames and plays through in
+	// real time; the depth is fixed for the stream.
 	JitterMinFrames int `yaml:"jitterMinFrames"`
 	JitterMaxFrames int `yaml:"jitterMaxFrames"`
 	// Gain attenuates the captured input before encoding (1.0 = unchanged).

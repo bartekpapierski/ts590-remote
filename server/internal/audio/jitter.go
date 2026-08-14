@@ -8,26 +8,19 @@ const (
 	// jbMaxAhead is the hard safety cap: a frame more than this far ahead of
 	// the play head is assumed to be from a stale/reordered stream and dropped.
 	jbMaxAhead = 64
-	// jbMinDepth / jbMaxDepth bound the adaptive target depth (in frames).
+	// jbMinDepth / jbMaxDepth bound the configured pre-buffer depth (frames).
 	jbMinDepth = 1
 	jbMaxDepth = 64
-	// jbOverMargin is how many frames the buffer may hold above its target
-	// before it starts counting toward shrinking the target.
-	jbOverMargin = 2
-	// jbShrinkEvery is how many consecutive over-filled gets trigger a
-	// one-frame shrink of the target depth (~5 s of 20 ms frames).
-	jbShrinkEvery = 250
 	// jbIdleResetGets is how many consecutive empty gets with no incoming
-	// frames reset the target depth to its initial value. The uplink only
-	// carries audio while the operator transmits; an empty run therefore means
-	// the transmission ended, and growing the depth on a transmit gap is a
-	// ratchet with no upside (it would pre-buffer the next transmission for
-	// longer and longer). ~500 ms of 20 ms frames.
+	// frames are treated as the end of a transmission. The uplink only carries
+	// audio while the operator transmits, so once the gap is long enough the
+	// buffer re-arms its pre-buffer so the next transmission starts clean.
+	// ~500 ms of 20 ms frames.
 	jbIdleResetGets = 25
 )
 
 // JitterStats is a point-in-time snapshot of the uplink jitter buffer used
-// for diagnostics and adaptive tuning.
+// for diagnostics.
 type JitterStats struct {
 	Depth     int
 	MinDepth  int
@@ -40,20 +33,19 @@ type JitterStats struct {
 	Occupancy int   // total frames buffered
 }
 
-// uplinkJB is an adaptive jitter buffer for decoded uplink (client mic)
+// uplinkJB is a fixed-depth jitter buffer for decoded uplink (client mic)
 // frames. Frames are keyed by their sequence number; the consumer pulls the
-// next expected frame in order. The buffer holds up to its target depth of
-// frames ahead of the play head to absorb jitter, then adapts that depth to
-// the observed stream:
+// next expected frame in order.
 //
-//   - a silent underrun (dropout) grows the target depth so more jitter is
-//     absorbed;
-//   - a persistent over-filled buffer (no dropouts, many frames held) shrinks
-//     the target depth to recover added latency.
-//
-// Missing frames (packet loss) are skipped by jumping to the oldest buffered
-// frame, and frames outside the jitter window are dropped so the buffer stays
-// bounded.
+// The buffer pre-buffers its depth at the start of a transmission to absorb
+// the one-way network latency, then plays through in real time: a missing
+// frame (packet loss) is skipped by jumping to the oldest buffered frame, and
+// a true underrun (frames delayed past the buffer) plays one frame of silence
+// and keeps going rather than growing the buffer. Growing the depth on an
+// underrun cannot fix clock drift — it only adds latency and makes each
+// dropout pause longer — so the depth is fixed at the configured value.
+// When the operator stops transmitting (an idle gap), the pre-buffer is
+// re-armed so the next transmission starts clean.
 type uplinkJB struct {
 	mu       sync.Mutex
 	frames   map[uint16][]int16
@@ -61,13 +53,11 @@ type uplinkJB struct {
 	frameLen int
 	maxAhead int
 
-	depth     int // current target depth
-	initial   int // target depth to fall back to after an idle gap
-	minDepth  int
-	maxDepth  int
-	started   bool
-	overCount int
-	idle      int // consecutive empty gets with no incoming frames
+	depth    int
+	minDepth int
+	maxDepth int
+	started  bool
+	idle     int // consecutive empty gets with no incoming frames
 
 	dropouts int64
 	skips    int64
@@ -78,8 +68,8 @@ func newUplinkJB(frameLen int) *uplinkJB {
 	return newUplinkJBDepth(frameLen, jbMinDepth, jbMinDepth, jbMaxDepth)
 }
 
-// newUplinkJBDepth creates an adaptive jitter buffer with an explicit initial
-// target depth and bounds on how far it may adapt.
+// newUplinkJBDepth creates a jitter buffer with an explicit pre-buffer depth
+// (in frames) and display bounds.
 func newUplinkJBDepth(frameLen, depth, minDepth, maxDepth int) *uplinkJB {
 	if minDepth < 1 {
 		minDepth = 1
@@ -98,7 +88,6 @@ func newUplinkJBDepth(frameLen, depth, minDepth, maxDepth int) *uplinkJB {
 		frameLen: frameLen,
 		maxAhead: jbMaxAhead,
 		depth:    depth,
-		initial:  depth,
 		minDepth: minDepth,
 		maxDepth: maxDepth,
 	}
@@ -124,14 +113,15 @@ func (j *uplinkJB) put(seq uint16, f []int16) {
 
 // get returns the next frame to play and advances the play head.
 //
-// Before the first frames arrive (and again after any true underrun) the
-// buffer holds output until it has accumulated its target depth, so an
-// initial burst of jitter is absorbed and a post-underrun reservoir is rebuilt
-// before playback resumes. Once playing, if the expected sequence number is
-// missing (a packet was lost) the play head jumps to the oldest buffered frame
-// rather than stalling forever. If there is nothing to play at all the buffer
-// reports an underrun, grows its target depth and re-enters refill mode. The
-// second return indicates whether a frame was available.
+// Before the first frames of a transmission arrive the buffer holds output
+// until it has accumulated its depth, absorbing the one-way latency so the
+// first words are not clipped. Once playing, if the expected sequence number
+// is missing (a packet was lost) the play head jumps to the oldest buffered
+// frame rather than stalling. If there is nothing to play at all the buffer
+// reports an underrun and plays one frame of silence — the depth is not grown
+// (that would only add latency) and the idle counter detects when the
+// transmission ends so the next one pre-buffers again. The second return
+// indicates whether a frame was available.
 func (j *uplinkJB) get() ([]int16, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -148,19 +138,16 @@ func (j *uplinkJB) get() ([]int16, bool) {
 	if ok {
 		delete(j.frames, j.next)
 		j.next++
-		j.checkShrink()
 		return f, true
 	}
 
 	oldest, ok := j.oldestAhead()
 	if !ok {
-		// True underrun: nothing to play. Report silence, grow the target
-		// depth so more jitter is absorbed, and drop back into refill mode so
-		// the buffer accumulates to the (possibly grown) depth before resuming
-		// playback instead of draining straight away.
+		// True underrun: nothing to play. Play one frame of silence; the idle
+		// counter decides whether this is a jitter dip (frames resume) or the
+		// end of the transmission (re-arm the pre-buffer).
 		j.dropouts++
-		j.grow()
-		j.started = false
+		j.countIdle()
 		return nil, false
 	}
 	j.skips++
@@ -168,47 +155,18 @@ func (j *uplinkJB) get() ([]int16, bool) {
 	f = j.frames[oldest]
 	delete(j.frames, oldest)
 	j.next++
-	j.checkShrink()
 	return f, true
 }
 
-// countIdle is called for each empty refill get. An extended run with no
-// incoming frames means the operator stopped transmitting; reset the target
-// depth so an idle gap does not ratchet it up (which would pre-buffer the next
-// transmission with more and more silence).
+// countIdle is called for each get with nothing to play. An extended run with
+// no incoming frames means the operator stopped transmitting; re-arm the
+// pre-buffer so the next transmission starts clean instead of playing the
+// first (latency-delayed) frames immediately.
 func (j *uplinkJB) countIdle() {
 	j.idle++
 	if j.idle >= jbIdleResetGets {
-		j.depth = j.initial
 		j.idle = 0
-		j.overCount = 0
-	}
-}
-
-// grow increases the target depth after an underrun so the buffer absorbs
-// more jitter next time.
-func (j *uplinkJB) grow() {
-	if j.depth < j.maxDepth {
-		j.depth++
-	}
-	j.overCount = 0
-}
-
-// checkShrink slowly lowers the target depth while the buffer is
-// persistently over-filled, recovering latency that is no longer needed.
-func (j *uplinkJB) checkShrink() {
-	if j.depth <= j.minDepth {
-		j.overCount = 0
-		return
-	}
-	if len(j.frames) >= j.depth+jbOverMargin {
-		j.overCount++
-		if j.overCount >= jbShrinkEvery {
-			j.depth--
-			j.overCount = 0
-		}
-	} else {
-		j.overCount = 0
+		j.started = false
 	}
 }
 

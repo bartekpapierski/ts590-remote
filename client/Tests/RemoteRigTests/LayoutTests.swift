@@ -96,4 +96,11 @@ struct LayoutTests {
         let mid = MainView.litSegments(255 / 2)
         #expect(mid >= 9 && mid <= 11)
     }
+
+    @Test func testStepLabels() {
+        #expect(MainView.stepLabel(1) == "1")
+        #expect(MainView.stepLabel(100) == "100")
+        #expect(MainView.stepLabel(1_000) == "1k")
+        #expect(MainView.stepLabel(1_000_000) == "1M")
+    }
 }

@@ -54,6 +54,9 @@ network:
 	if c.Audio.JitterFrames != 2 {
 		t.Errorf("Audio.JitterFrames = %d, want 2", c.Audio.JitterFrames)
 	}
+	if c.Audio.Gain != 1.0 {
+		t.Errorf("Audio.Gain = %v, want 1.0", c.Audio.Gain)
+	}
 	if c.Network.ControlAddr != "0.0.0.0:5900" {
 		t.Errorf("Network.ControlAddr = %q, want %q", c.Network.ControlAddr, "0.0.0.0:5900")
 	}

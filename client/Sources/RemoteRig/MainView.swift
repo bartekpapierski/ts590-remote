@@ -7,7 +7,7 @@ struct MainView: View {
     @State private var showAdvanced = false
     @State private var pressing = false
 
-    private let modes = ["LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "USER"]
+    private let modes = ["LSB", "USB", "CW", "FM", "AM", "FSK", "CW-R", "FSK-R"]
     private let steps: [Int64] = [1, 10, 100, 1000]
 
     var body: some View {
@@ -36,27 +36,13 @@ struct MainView: View {
         VStack(spacing: 14) {
             FrequencyView()
 
-            HStack(spacing: 10) {
-                Picker("VFO", selection: Binding(
-                    get: { model.activeVFO },
-                    set: { model.selectVFO($0) })) {
-                    Text("A").tag(VFO.a)
-                    Text("B").tag(VFO.b)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 88)
-                .disabled(!model.connected)
-
-                ForEach(steps, id: \.self) { s in
-                    Button(stepLabel(s)) { model.stepHz = s }
-                        .buttonStyle(.bordered)
-                        .tint(model.stepHz == s ? Theme.meter : .primary)
-                }
+            HStack(alignment: .center, spacing: 16) {
+                vfoControl
+                stepControl
                 Spacer(minLength: 0)
-                Text("STEP")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Theme.dim)
             }
+
+            bandGrid
 
             Picker("Mode", selection: Binding(
                 get: { model.mode },
@@ -67,21 +53,58 @@ struct MainView: View {
             .disabled(!model.connected)
 
             sMeter
-
-            if model.ptt {
-                Text("TX")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(Theme.tx)
-                    .cornerRadius(6)
-            }
         }
         .padding(20)
     }
 
     // Segmented S-meter: 0–255 maps to discrete lit segments.
+    private var vfoControl: some View {
+        HStack(spacing: 8) {
+            Text("VFO")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(Theme.dim)
+                .lineLimit(1)
+                .fixedSize()
+
+            Picker("", selection: Binding(
+                get: { model.activeVFO },
+                set: { model.selectVFO($0) })) {
+                Text("A").tag(VFO.a)
+                Text("B").tag(VFO.b)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 88)
+            .disabled(!model.connected)
+        }
+    }
+
+    private var stepControl: some View {
+        HStack(spacing: 8) {
+            Text("STEP")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundColor(Theme.dim)
+
+            ForEach(steps, id: \.self) { s in
+                Button(Self.stepLabel(s)) { model.stepHz = s }
+                    .buttonStyle(.bordered)
+                    .tint(model.stepHz == s ? Theme.meter : .primary)
+            }
+        }
+    }
+
+    private var bandGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 4) {
+            ForEach(Band.all) { band in
+                Button(band.label) { model.selectBand(band) }
+                    .buttonStyle(.bordered)
+                    .tint(model.selectedBand == band ? Theme.meter : .primary)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .disabled(!model.connected)
+            }
+        }
+    }
+
     private var sMeter: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -134,19 +157,30 @@ struct MainView: View {
 
     private var pttRow: some View {
         HStack(spacing: 12) {
-            // PTT — hold to talk (spacebar works too).
-            Button(action: {}) {
-                Text(model.ptt ? "TX — transmitting" : "HOLD TO TALK")
-                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity, minHeight: 52)
-            }
-            .background(model.ptt ? Theme.tx : (pressing ? Theme.warn : Theme.panel))
-            .cornerRadius(8)
-            .gesture(LongPressGesture(minimumDuration: 0.01)
-                .onChanged { _ in pressing = true; model.setPTT(true) }
-                .onEnded { _ in pressing = false; model.setPTT(false) })
-            .disabled(!model.connected)
+            // PTT — hold to talk (spacebar works too). A DragGesture(minimumDistance: 0)
+            // is used rather than LongPressGesture-on-Button, which macOS often
+            // swallows; DragGesture fires onChanged on press and onEnded on release.
+            Text("HOLD TO TALK")
+                .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(model.ptt ? Theme.tx : (pressing ? Theme.warn : Theme.panel))
+                .cornerRadius(8)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in
+                            if !pressing {
+                                pressing = true
+                                model.setPTT(true)
+                            }
+                        }
+                        .onEnded { _ in
+                            pressing = false
+                            model.setPTT(false)
+                        })
+                .disabled(!model.connected)
+                .opacity(model.connected ? 1 : 0.5)
 
             // TX lock — latch the transmitter on until released (or the rig
             // reports it dropped TX). Separate from the momentary hold pad.
@@ -216,8 +250,14 @@ struct MainView: View {
         return model.connected ? Theme.ok : Theme.dim
     }
 
-    private func stepLabel(_ s: Int64) -> String {
-        s >= 1000 ? String(format: "%gk", s / 1000) : "\(s)"
+    static func stepLabel(_ s: Int64) -> String {
+        if s >= 1_000_000 {
+            return String(format: "%gM", Double(s) / 1_000_000.0)
+        }
+        if s >= 1_000 {
+            return String(format: "%gk", Double(s) / 1_000.0)
+        }
+        return "\(s)"
     }
 
     private static var spacePTTInstalled = false

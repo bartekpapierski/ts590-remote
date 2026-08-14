@@ -1,29 +1,34 @@
 import SwiftUI
 import AppKit
 
-// Overlay view that forwards scroll-wheel events to the model so the
-// operator can tune the VFO by scrolling over the frequency readout.
+// Overlay view that owns the readout's pointer interactions: scroll-wheel
+// events tune the VFO, and clicks select the digit column under the cursor.
+// Handling both here, rather than forwarding clicks up to SwiftUI gesture
+// recognizers, guarantees a click always selects and a scroll always tunes.
 struct ScrollWheelView: NSViewRepresentable {
+    var onClick: (CGFloat) -> Void
     var onWheel: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> WheelNSView { WheelNSView() }
 
     func updateNSView(_ nsView: WheelNSView, context: Context) {
+        nsView.onClick = onClick
         nsView.onWheel = onWheel
     }
 }
 
 final class WheelNSView: NSView {
+    var onClick: ((CGFloat) -> Void)?
     var onWheel: ((CGFloat) -> Void)?
 
     override func scrollWheel(with event: NSEvent) {
         onWheel?(event.deltaY)
     }
 
-    // The overlay must not swallow clicks: forward mouse events up the
-    // responder chain so the digit columns' onTapGesture still fire.
-    override func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
-    override func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        onClick?(p.x)
+    }
 
     override var acceptsFirstResponder: Bool { true }
 }
@@ -45,6 +50,12 @@ struct FrequencyView: View {
     @EnvironmentObject var model: RemoteRigModel
     @State private var selectedColumn: Int?
 
+    // Cell widths shared by the SwiftUI layout and the overlay's hit-testing so
+    // the digit a user clicks is always the column that scroll tunes.
+    private static let digitWidth: CGFloat = 30
+    private static let sepWidth: CGFloat = 18
+    private static var contentWidth: CGFloat { 8 * digitWidth + 2 * sepWidth }
+
     // Place value in Hz of each digit column, most significant first.
     private static let placeValues: [Int64] = [10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1]
 
@@ -58,41 +69,53 @@ struct FrequencyView: View {
     }
 
     private var readout: some View {
-        VStack(spacing: 0) {
-            if model.connected {
-                digitCells
-            } else {
-                Text("–.---.---")
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                if model.connected {
+                    digitCells
+                } else {
+                    Text("–.---.---")
+                }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .overlay(scrollOverlay(totalWidth: geo.size.width))
         }
         .font(.system(size: 46, weight: .regular, design: .monospaced))
         .monospacedDigit()
         .foregroundColor(model.connected ? Theme.readout : Theme.dim)
         .frame(minWidth: 300, minHeight: 56)
-        .overlay(ScrollWheelView { dy in
-            guard model.connected else { return }
-            model.nudgeFreq(Self.scrollStep(deltaY: dy, column: selectedColumn, fallback: model.stepHz))
-        })
         .help(scrollHelp)
+    }
+
+    // The wheel overlay spans the whole readout so scrolling works everywhere,
+    // not just over the narrower digit band. Click x is corrected for the
+    // horizontal centering of the digit band before mapping to a column.
+    private func scrollOverlay(totalWidth: CGFloat) -> some View {
+        let pad = (totalWidth - Self.contentWidth) / 2
+        return ScrollWheelView(
+            onClick: { x in
+                guard model.connected else { return }
+                if let col = Self.column(atX: x - pad) {
+                    // Re-clicking the selected digit clears the selection.
+                    selectedColumn = (selectedColumn == col) ? nil : col
+                }
+            },
+            onWheel: { dy in
+                guard model.connected else { return }
+                model.nudgeFreq(Self.scrollStep(deltaY: dy, column: selectedColumn, fallback: model.stepHz))
+            })
     }
 
     private var digitCells: some View {
         HStack(spacing: 0) {
             ForEach(Self.readoutCells(for: model.activeFreq)) { cell in
-                if let col = cell.column {
-                    Text(String(cell.character))
-                        .frame(width: 30, height: 56)
-                        .background(selectedColumn == col ? Theme.meter.opacity(0.22) : Color.clear)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            selectedColumn = (selectedColumn == col) ? nil : col
-                        }
-                } else {
-                    Text(String(cell.character))
-                        .frame(height: 56)
-                }
+                let w = cell.column == nil ? Self.sepWidth : Self.digitWidth
+                Text(String(cell.character))
+                    .frame(width: w, height: 56)
+                    .background(cell.column != nil && selectedColumn == cell.column ? Theme.meter.opacity(0.22) : Color.clear)
             }
         }
+        .frame(width: Self.contentWidth, height: 56)
     }
 
     private var scrollHelp: String {
@@ -127,6 +150,25 @@ struct FrequencyView: View {
         case 7...9: return index - 2
         default: return nil
         }
+    }
+
+    // Width, in points, of the readout cell at `index` (digits are wider than
+    // the '.' group separators). Must match the SwiftUI layout in digitCells.
+    static func cellWidth(at index: Int) -> CGFloat {
+        (index == 2 || index == 6) ? sepWidth : digitWidth
+    }
+
+    // The digit column under an x offset within the readout, or nil when the
+    // click landed on a group separator.
+    static func column(atX x: CGFloat) -> Int? {
+        guard x >= 0 else { return nil }
+        var cum: CGFloat = 0
+        for i in 0..<readoutCells(for: 0).count {
+            let w = cellWidth(at: i)
+            if x >= cum && x < cum + w { return column(at: i) }
+            cum += w
+        }
+        return nil
     }
 
     // Tuning step in Hz for a digit column; out-of-range columns fall back to

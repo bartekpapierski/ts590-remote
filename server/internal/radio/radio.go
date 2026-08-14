@@ -242,8 +242,16 @@ func (r *Radio) clearPending(pr *pendingReq) {
 
 // isQueryCmd reports whether a normalized CAT command ("XX;" exactly) is a
 // read; a longer command is a write. The caller must have appended ';' — the
-// helper does not validate it.
-func isQueryCmd(cmd string) bool { return len(cmd) == 3 }
+// helper does not validate it. TX; and RX; are 3-char but are *set* commands:
+// they answer only when the Auto Information function is ON, so waiting for
+// an echo would time out. Treat them as fire-and-forget like other sets.
+func isQueryCmd(cmd string) bool {
+	if len(cmd) != 3 {
+		return false
+	}
+	code := cmd[:2]
+	return code != "TX" && code != "RX"
+}
 
 // timeoutFor returns the reply window for a command code. Powering on the rig
 // takes several seconds (DSP boot), so the PS code gets a longer window.

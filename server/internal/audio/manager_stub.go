@@ -12,7 +12,7 @@ import (
 // still work; audio start/stop are accepted but produce no real stream.
 type Manager struct{}
 
-func NewManager(def *protocol.OpusParams, device string, sendDown func(uint16, []byte), log *zap.Logger) *Manager {
+func NewManager(def *protocol.OpusParams, device string, gain float32, sendDown func(uint16, []byte), log *zap.Logger) *Manager {
 	return &Manager{}
 }
 

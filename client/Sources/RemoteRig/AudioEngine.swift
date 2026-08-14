@@ -32,7 +32,7 @@ final class AudioEngine {
         self.params = params
         encoder = OpusEncoder(
             sampleRate: params.sampleRate, channels: params.channels,
-            application: .restrictedLowDelay, bitrate: params.bitrate, frameMs: params.frameMs)
+            application: .audio, bitrate: params.bitrate, frameMs: params.frameMs)
         decoder = OpusDecoder(
             sampleRate: params.sampleRate, channels: params.channels, frameMs: params.frameMs)
         startEngine()
@@ -47,16 +47,30 @@ final class AudioEngine {
         if let id = outputDevice { AudioDevices.setDefaultOutput(id) }
 
         let inFmt = engine.inputNode.outputFormat(forBus: 0)
-        let outFmt = engine.outputNode.outputFormat(forBus: 0)
+        // Fallback hardware format for the source node when Opus format
+        // construction fails (should never happen for standard rates).
+        let defFmt = engine.outputNode.outputFormat(forBus: 0)
+        let p = params
 
-        let source = AVAudioSourceNode(format: outFmt) { [weak self] (_, _, frameCount, bufferList) -> OSStatus in
+        // Create the source node at the Opus sample rate so AVAudioEngine
+        // inserts a sample-rate converter when the hardware rate differs.
+        // Without this the render callback reads frameCount samples at the
+        // Opus rate but writes them at the hardware rate, causing a pitch
+        // shift and cyclical underruns that sound metallic.
+        let opusRate = Double(p?.sampleRate ?? 48000)
+        let opusCh = AVAudioChannelCount(p?.channels ?? 1)
+        let opusFmt = AVAudioFormat(
+            standardFormatWithSampleRate: opusRate, channels: opusCh)
+            ?? defFmt
+
+        let source = AVAudioSourceNode(format: opusFmt) { [weak self] (_, _, frameCount, bufferList) -> OSStatus in
             self?.renderOutput(bufferList, frameCount: Int(frameCount))
             return 0
         }
         engine.attach(source)
-        engine.connect(source, to: engine.mainMixerNode, format: outFmt)
+        engine.connect(source, to: engine.mainMixerNode, format: opusFmt)
 
-        let frameSamples = ((params?.sampleRate ?? 48000) * (params?.frameMs ?? 20) / 1000) * (params?.channels ?? 1)
+        let frameSamples = ((p?.sampleRate ?? 48000) * (p?.frameMs ?? 20) / 1000) * (p?.channels ?? 1)
         engine.inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(frameSamples), format: inFmt) { [weak self] buffer, _ in
             self?.captureInput(buffer)
         }
@@ -128,7 +142,6 @@ final class AudioEngine {
         // Iterate the real (variable-length) buffer list. Copying `list.pointee`
         // truncates to the first inline buffer and yields garbage mData for the rest.
         let abl = UnsafeMutableAudioBufferListPointer(list)
-        var chIdx = 0
         for buffer in abl {
             guard let raw = buffer.mData else { continue }
             let ch = Int(buffer.mNumberChannels)
@@ -136,22 +149,16 @@ final class AudioEngine {
             let frames = Int(buffer.mDataByteSize / max(bytesPerFrame, 1))
             let n = min(frameCount, frames)
             let ptr = raw.assumingMemoryBound(to: Float.self)
-            if ch == 1 {
-                for i in 0..<n {
-                    let idx = i * channels + chIdx
-                    let s: Int16 = idx < out.count ? out[idx] : 0
-                    ptr[i] = Float(s) / 32768.0
-                }
-            } else {
-                for i in 0..<n {
-                    for c in 0..<ch {
-                        let idx = i * channels + c
-                        let s: Float = idx < out.count ? Float(out[idx]) / 32768.0 : 0
-                        ptr[i * ch + c] = s
-                    }
+            for i in 0..<n {
+                for c in 0..<ch {
+                    // Clamp the source channel so mono Opus playing to a
+                    // stereo output doesn't read past the available samples.
+                    let srcC = c < channels ? c : (channels - 1)
+                    let idx = i * channels + srcC
+                    let s: Float = idx < out.count ? Float(out[idx]) / 32768.0 : 0
+                    ptr[i * ch + c] = s
                 }
             }
-            chIdx += ch
         }
     }
 

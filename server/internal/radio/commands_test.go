@@ -106,9 +106,10 @@ func TestParseFreq(t *testing.T) {
 }
 
 func TestModeTables(t *testing.T) {
-	// Verify all 8 modes are present in both directions.
+	// Verify all 8 modes are present in both directions, with codes 1-7 and 9
+	// (0 and 8 are "None (setting failure)" per the TS-590S reference).
 	for code, name := range modeToString {
-		if code < 0 || code > 7 {
+		if code < 1 || code > 9 || code == 8 {
 			t.Errorf("modeToString has out-of-range code %d", code)
 		}
 		reverse, ok := stringToMode[name]
@@ -131,16 +132,16 @@ func TestSetModeValidation(t *testing.T) {
 		mode string
 		want int
 	}{
-		{"USB", 1},
-		{"LSB", 0},
-		{"CW", 2},
-		{"FM", 3},
-		{"AM", 4},
-		{"FSK", 5},
-		{"CW-R", 6},
-		{"USER", 7},
-		{"0", 0}, // single digit
-		{"7", 7},
+		{"USB", 2},
+		{"LSB", 1},
+		{"CW", 3},
+		{"FM", 4},
+		{"AM", 5},
+		{"FSK", 6},
+		{"CW-R", 7},
+		{"FSK-R", 9},
+		{"1", 1}, // single digit
+		{"9", 9},
 	}
 	for _, tt := range tests {
 		code, ok := stringToMode[tt.mode]

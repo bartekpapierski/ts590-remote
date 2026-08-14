@@ -71,7 +71,8 @@ func TestIsQuery(t *testing.T) {
 		want bool
 	}{
 		{"FA;", true},
-		{"TX;", true},
+		{"TX;", false}, // 3-char but a set command (echo only with AI on)
+		{"RX;", false},
 		{"FA00014000000;", false},
 		{"PS1;", false},
 	}

@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-// Mode code tables for the TS-590S MD command.
+// Mode code tables for the TS-590S MD command. Codes 0 and 8 are "None
+// (setting failure)" per the reference and are deliberately absent.
 var modeToString = map[int]string{
-	0: "LSB", 1: "USB", 2: "CW", 3: "FM",
-	4: "AM", 5: "FSK", 6: "CW-R", 7: "USER",
+	1: "LSB", 2: "USB", 3: "CW", 4: "FM",
+	5: "AM", 6: "FSK", 7: "CW-R", 9: "FSK-R",
 }
 var stringToMode = func() map[string]int {
 	m := map[string]int{}
@@ -97,7 +98,8 @@ func (r *Radio) SetPTT(on bool) error {
 		resp, err = r.Send("RX;")
 	}
 	if err == nil {
-		// TS-590S confirms TX with "TX;" / "RX;" echo.
+		// TS-590S keys on bare "TX;" (P1 defaults to 0 = SEND) and drops on
+		// "RX;" — neither needs a parameter.
 		_ = resp
 		r.ptt.Store(on)
 	}

@@ -20,12 +20,15 @@ type RadioConfig struct {
 }
 
 type AudioConfig struct {
-	Device       string `yaml:"device"`
-	SampleRate   int    `yaml:"sampleRate"`
-	Channels     int    `yaml:"channels"`
-	OpusFrameMs  int    `yaml:"opusFrameMs"`
-	OpusBitrate  int    `yaml:"opusBitrate"`
-	JitterFrames int    `yaml:"jitterFrames"`
+	Device       string  `yaml:"device"`
+	SampleRate   int     `yaml:"sampleRate"`
+	Channels     int     `yaml:"channels"`
+	OpusFrameMs  int     `yaml:"opusFrameMs"`
+	OpusBitrate  int     `yaml:"opusBitrate"`
+	JitterFrames int     `yaml:"jitterFrames"`
+	// Gain attenuates the captured input before encoding (1.0 = unchanged).
+	// Use <1.0 to avoid clipping when the rig's USB AF level is set hot.
+	Gain float64 `yaml:"gain"`
 }
 
 type NetworkConfig struct {
@@ -60,6 +63,12 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Audio.JitterFrames == 0 {
 		c.Audio.JitterFrames = 2
+	}
+	if c.Audio.Gain == 0 {
+		c.Audio.Gain = 1.0
+	}
+	if c.Audio.Gain < 0 {
+		c.Audio.Gain = 1.0
 	}
 	if c.Network.ControlAddr == "" {
 		c.Network.ControlAddr = "0.0.0.0:5900"

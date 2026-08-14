@@ -10,6 +10,33 @@ enum VFO: Equatable {
     case b
 }
 
+// A frequency band addressable via the BD/BU CAT command, or the special 60 m
+// band (no BD code — handled by writing a frequency directly).
+struct Band: Equatable, Identifiable {
+    let id: Int          // BD band number, or -1 for 60 m
+    let label: String
+
+    var is60m: Bool { id == -1 }
+    var isBD: Bool { id >= 0 && id <= 10 }
+
+    static let all: [Band] = [
+        Band(id: 0, label: "160 m"),
+        Band(id: 1, label: "80 m"),
+        Band(id: 2, label: "40 m"),
+        Band(id: 3, label: "30 m"),
+        Band(id: 4, label: "20 m"),
+        Band(id: 5, label: "17 m"),
+        Band(id: 6, label: "15 m"),
+        Band(id: 7, label: "12 m"),
+        Band(id: 8, label: "10 m"),
+        Band(id: 9, label: "6 m"),
+        Band(id: -1, label: "60 m"),
+        Band(id: 10, label: "GENE"),
+    ]
+
+    static let default60mFreq: Int64 = 5_330_000
+}
+
 @MainActor
 final class RemoteRigModel: ObservableObject {
     // MARK: published UI state
@@ -18,6 +45,7 @@ final class RemoteRigModel: ObservableObject {
     @Published var freqA: Int64 = 14000000
     @Published var freqB: Int64 = 14000000
     @Published var mode = "USB"
+    @Published var selectedBand: Band?
     @Published var ptt = false
     @Published var txLock = false
     @Published var af = 120
@@ -44,6 +72,7 @@ final class RemoteRigModel: ObservableObject {
     @Published var opusChannels: Int = 1 { didSet { UserDefaults.standard.set(opusChannels, forKey: "opusChannels") } }
     @Published var opusFrameMs: Int = 20 { didSet { UserDefaults.standard.set(opusFrameMs, forKey: "opusFrameMs") } }
     @Published var opusBitrate: Int = 48000 { didSet { UserDefaults.standard.set(opusBitrate, forKey: "opusBitrate") } }
+    @Published var band60Freq: Int64 = Band.default60mFreq { didSet { UserDefaults.standard.set(band60Freq, forKey: "band60Freq") } }
 
     // Opus bitrate bounds for the settings UI, in bps. The server clamps to
     // [500, 128000]; the stepper works in whole kbps.
@@ -62,6 +91,7 @@ final class RemoteRigModel: ObservableObject {
         if d.object(forKey: "opusChannels") != nil { opusChannels = d.integer(forKey: "opusChannels") }
         if d.object(forKey: "opusFrameMs") != nil { opusFrameMs = d.integer(forKey: "opusFrameMs") }
         if d.object(forKey: "opusBitrate") != nil { opusBitrate = d.integer(forKey: "opusBitrate") }
+        if d.object(forKey: "band60Freq") != nil { band60Freq = Int64(d.integer(forKey: "band60Freq")) }
         validateDeviceIDs(input: AudioDevices.inputDevices, output: AudioDevices.outputDevices)
     }
 
@@ -184,7 +214,7 @@ final class RemoteRigModel: ObservableObject {
             // probe's. Resolve it on any cat_resp so a nil-raw reply cannot
             // leave probeInFlight stuck (which would swallow later errors).
             if probeInFlight { handleProbeResult(true) }
-            if let raw = m.raw { appendEvent(raw) }
+            if let raw = m.raw { applyEvent(raw); appendEvent(raw) }
         case "cat_event":
             if let raw = m.raw { applyEvent(raw); appendEvent(raw) }
         case "state":
@@ -273,7 +303,7 @@ final class RemoteRigModel: ObservableObject {
     }
 
     func modeName(_ i: Int) -> String? {
-        switch i { case 0: return "LSB"; case 1: return "USB"; case 2: return "CW"; case 3: return "FM"; case 4: return "AM"; case 5: return "FSK"; case 6: return "CW-R"; case 7: return "USER"; default: return nil }
+        switch i { case 1: return "LSB"; case 2: return "USB"; case 3: return "CW"; case 4: return "FM"; case 5: return "AM"; case 6: return "FSK"; case 7: return "CW-R"; case 9: return "FSK-R"; default: return nil }
     }
 
     private func appendEvent(_ raw: String) {
@@ -316,14 +346,32 @@ final class RemoteRigModel: ObservableObject {
         sendCat(vfo == .a ? "FR0;" : "FR1;")
     }
 
-    func setMode(_ m: String) { sendCat("MD" + modeDigit(m) + ";") }
+    func setMode(_ m: String) { mode = m; sendCat("MD" + modeDigit(m) + ";") }
     func modeDigit(_ m: String) -> String {
-        switch m { case "LSB": return "0"; case "USB": return "1"; case "CW": return "2"; case "FM": return "3"; case "AM": return "4"; case "FSK": return "5"; case "CW-R": return "6"; case "USER": return "7"; default: return "1" }
+        switch m { case "LSB": return "1"; case "USB": return "2"; case "CW": return "3"; case "FM": return "4"; case "AM": return "5"; case "FSK": return "6"; case "CW-R": return "7"; case "FSK-R": return "9"; default: return "2" }
     }
     func setAF(_ v: Int) { af = v; sendCat("AG" + String(format: "%03d", v) + ";") }
     func setRF(_ v: Int) { rf = v; sendCat("RG" + String(format: "%03d", v) + ";") }
     func setPower(_ v: Int) { power = v; sendCat("PC" + String(format: "%03d", v) + ";") }
-    func setSQL(_ v: Int) { sql = v; sendCat("SQL" + String(format: "%03d", v) + ";") }
+    func setSQL(_ v: Int) { sql = v; sendCat("SQ" + String(format: "%03d", v) + ";") }
+
+    // Select a band via BD (standard bands) or FA (60 m, no BD code).
+    func selectBand(_ band: Band) {
+        selectedBand = band
+        if band.is60m {
+            setFreq(band60Freq)
+            sendCat("MD;")
+        } else {
+            sendCat(String(format: "BD%02d;", band.id))
+            // BD jumps the VFO to the band's stored frequency without
+            // broadcasting it. Query the active VFO and the mode so the
+            // readout and mode picker refresh for whatever the rig recalls
+            // per-band.
+            let prefix = activeVFO == .a ? "FA" : "FB"
+            sendCat("\(prefix);")
+            sendCat("MD;")
+        }
+    }
 
     func setPTT(_ on: Bool) {
         // While latched, the latch owns TX: the momentary pad (or spacebar)

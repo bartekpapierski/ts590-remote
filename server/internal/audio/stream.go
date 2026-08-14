@@ -4,6 +4,7 @@ package audio
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,30 +20,37 @@ import (
 //   - radio RX audio is captured, Opus-encoded, and sent downlink
 //   - client uplink (mic) Opus is decoded and played to the rig's TX audio
 type Stream struct {
-	params   *protocol.OpusParams
+	params    *protocol.OpusParams
 	frameSize int // samples per channel
 	frameLen  int // frameSize * channels
 	enc       *opus.Encoder
 	dec       *opus.Decoder
 
 	pa       *portaudio.Stream
-	encodeCh chan []int16
 	uplink   *uplinkJB
 	sendDown func(uint16, []byte)
 	rxPaused *atomic.Bool
 
+	inMu   sync.Mutex
+	inBuf  []int16
+	inWake chan struct{}
+
 	seqMu sync.Mutex
 	seq   uint16
 
-	log    *zap.Logger
-	closed chan struct{}
-	once   sync.Once
+	log        *zap.Logger
+	closed     chan struct{}
+	once       sync.Once
+	dumpRaw    *os.File
+	dumpBytes  int
+	dumpCapped bool
+	gain       float32 // PCM multiplier applied before encoding
 }
 
 // Open discovers the USB audio device, clamps the Opus parameters to its
 // capabilities, and opens the full-duplex PortAudio stream. It returns the
 // effective parameters the client must also use.
-func Open(device string, req *protocol.OpusParams, sendDown func(uint16, []byte), rxPaused *atomic.Bool, log *zap.Logger) (*protocol.OpusParams, *Stream, error) {
+func Open(device string, req *protocol.OpusParams, gain float32, sendDown func(uint16, []byte), rxPaused *atomic.Bool, log *zap.Logger) (*protocol.OpusParams, *Stream, error) {
 	devs, err := portaudio.Devices()
 	if err != nil {
 		return nil, nil, err
@@ -88,7 +96,7 @@ func Open(device string, req *protocol.OpusParams, sendDown func(uint16, []byte)
 
 	eff, _ := ClampParams(req, devRate, chCap)
 
-	enc, err := opus.NewEncoder(eff.SampleRate, eff.Channels, opus.AppRestrictedLowdelay)
+	enc, err := opus.NewEncoder(eff.SampleRate, eff.Channels, opus.AppAudio)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -102,23 +110,47 @@ func Open(device string, req *protocol.OpusParams, sendDown func(uint16, []byte)
 
 	fs := FrameSize(eff.SampleRate, eff.FrameMs)
 	s := &Stream{
-		params:   eff,
+		params:    eff,
 		frameSize: fs,
 		frameLen:  fs * eff.Channels,
 		enc:       enc,
 		dec:       dec,
-		encodeCh:  make(chan []int16, 8),
+		inWake:    make(chan struct{}, 1),
 		uplink:    newUplinkJB(fs * eff.Channels),
 		sendDown:  sendDown,
 		rxPaused:  rxPaused,
 		log:       log,
+		gain:      gain,
 		closed:    make(chan struct{}),
 	}
 
+	// Env var overrides the config value (useful for one-off testing).
+	if g := os.Getenv("TS590_AUDIO_GAIN"); g != "" {
+		if v, err := fmt.Sscanf(g, "%f", &s.gain); err == nil && v == 1 {
+			if s.gain < 0 {
+				s.gain = 0
+			}
+			if s.gain > 2 {
+				s.gain = 2
+			}
+		}
+	}
+	if s.gain != 1.0 {
+		log.Info("audio gain", zap.Float32("gain", s.gain))
+	}
+
+	if p := os.Getenv("TS590_DUMP_PCM"); p != "" {
+		f, err := os.Create(p)
+		if err == nil {
+			s.dumpRaw = f
+			log.Info("dumping raw PCM (capped)", zap.String("path", p))
+		}
+	}
+
 	params := portaudio.StreamParameters{
-		Input:  portaudio.StreamDeviceParameters{Device: inDev, Channels: eff.Channels, Latency: 0},
-		Output: portaudio.StreamDeviceParameters{Device: outDev, Channels: eff.Channels, Latency: 0},
-		SampleRate:     float64(eff.SampleRate),
+		Input:           portaudio.StreamDeviceParameters{Device: inDev, Channels: eff.Channels, Latency: 0},
+		Output:          portaudio.StreamDeviceParameters{Device: outDev, Channels: eff.Channels, Latency: 0},
+		SampleRate:      float64(eff.SampleRate),
 		FramesPerBuffer: fs,
 	}
 	pa, err := portaudio.OpenStream(params, s.callback)
@@ -137,6 +169,9 @@ func (s *Stream) Start() error { return s.pa.Start() }
 func (s *Stream) Close() {
 	s.once.Do(func() {
 		close(s.closed)
+		if s.dumpRaw != nil {
+			s.dumpRaw.Close()
+		}
 		if s.pa != nil {
 			_ = s.pa.Stop()
 			_ = s.pa.Close()
@@ -157,9 +192,23 @@ func (s *Stream) PushUplink(seq uint16, data []byte) {
 
 func (s *Stream) callback(in, out []float32, _ portaudio.StreamCallbackTimeInfo, _ portaudio.StreamCallbackFlags) {
 	if len(in) > 0 {
-		pcm := f32ToI16(in)
+		pcm := f32ToI16(in, s.gain)
+		if s.dumpRaw != nil {
+			if s.dumpBytes < 30*48000*s.params.Channels*2 { // ~30 s
+				n, _ := s.dumpRaw.Write(u16ToBytes(pcm))
+				s.dumpBytes += n
+			} else if !s.dumpCapped {
+				s.dumpCapped = true
+				s.dumpRaw.Close()
+				s.dumpRaw = nil
+			}
+		}
+		s.inMu.Lock()
+		s.inBuf = append(s.inBuf, pcm...)
+		s.inMu.Unlock()
+		// Non-blocking wake: if a wake signal is already pending, skip.
 		select {
-		case s.encodeCh <- pcm:
+		case s.inWake <- struct{}{}:
 		default:
 		}
 	}
@@ -176,33 +225,51 @@ func (s *Stream) callback(in, out []float32, _ portaudio.StreamCallbackTimeInfo,
 }
 
 func (s *Stream) encodeLoop() {
+	const maxPending = 1 << 19
 	for {
 		select {
 		case <-s.closed:
 			return
-		case pcm := <-s.encodeCh:
+		case <-s.inWake:
 			if s.rxPaused != nil && s.rxPaused.Load() {
-				continue // RX paused: do not consume downlink bandwidth
-			}
-			data := make([]byte, 4000)
-			n, err := s.enc.Encode(pcm, data)
-			if err != nil {
 				continue
 			}
-			s.seqMu.Lock()
-			s.seq++
-			seq := s.seq
-			s.seqMu.Unlock()
-			s.sendDown(seq, data[:n])
+			s.inMu.Lock()
+			buf := s.inBuf
+			s.inBuf = nil
+			s.inMu.Unlock()
+
+			if len(buf) > maxPending {
+				excess := len(buf) - maxPending
+				excess -= excess % s.params.Channels
+				buf = buf[excess:]
+			}
+
+			for len(buf) >= s.frameLen {
+				frame := buf[:s.frameLen]
+				buf = buf[s.frameLen:]
+
+				data := make([]byte, 4000)
+				n, err := s.enc.Encode(frame, data)
+				if err != nil {
+					continue
+				}
+				s.seqMu.Lock()
+				s.seq++
+				seq := s.seq
+				s.seqMu.Unlock()
+				s.sendDown(seq, data[:n])
+			}
 		}
 	}
 }
 
 // --- PCM helpers -------------------------------------------------------
 
-func f32ToI16(in []float32) []int16 {
+func f32ToI16(in []float32, gain float32) []int16 {
 	out := make([]int16, len(in))
 	for i, v := range in {
+		v *= gain
 		if v > 1 {
 			v = 1
 		} else if v < -1 {
@@ -217,4 +284,13 @@ func i16ToF32(in []int16, out []float32) {
 	for i, v := range in {
 		out[i] = float32(v) / 32768.0
 	}
+}
+
+func u16ToBytes(samples []int16) []byte {
+	b := make([]byte, len(samples)*2)
+	for i, v := range samples {
+		b[i*2] = byte(v)
+		b[i*2+1] = byte(v >> 8)
+	}
+	return b
 }

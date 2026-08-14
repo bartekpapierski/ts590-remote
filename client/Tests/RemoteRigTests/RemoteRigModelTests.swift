@@ -7,29 +7,64 @@ struct RemoteRigModelTests {
 
     @Test func testModeName() {
         let model = RemoteRigModel()
-        #expect(model.modeName(0) == "LSB")
-        #expect(model.modeName(1) == "USB")
-        #expect(model.modeName(2) == "CW")
-        #expect(model.modeName(3) == "FM")
-        #expect(model.modeName(4) == "AM")
-        #expect(model.modeName(5) == "FSK")
-        #expect(model.modeName(6) == "CW-R")
-        #expect(model.modeName(7) == "USER")
+        #expect(model.modeName(1) == "LSB")
+        #expect(model.modeName(2) == "USB")
+        #expect(model.modeName(3) == "CW")
+        #expect(model.modeName(4) == "FM")
+        #expect(model.modeName(5) == "AM")
+        #expect(model.modeName(6) == "FSK")
+        #expect(model.modeName(7) == "CW-R")
+        #expect(model.modeName(9) == "FSK-R")
+        #expect(model.modeName(0) == nil)
         #expect(model.modeName(8) == nil)
         #expect(model.modeName(-1) == nil)
     }
 
     @Test func testModeDigit() {
         let model = RemoteRigModel()
-        #expect(model.modeDigit("LSB") == "0")
-        #expect(model.modeDigit("USB") == "1")
-        #expect(model.modeDigit("CW") == "2")
-        #expect(model.modeDigit("FM") == "3")
-        #expect(model.modeDigit("AM") == "4")
-        #expect(model.modeDigit("FSK") == "5")
-        #expect(model.modeDigit("CW-R") == "6")
-        #expect(model.modeDigit("USER") == "7")
-        #expect(model.modeDigit("UNKNOWN") == "1")
+        #expect(model.modeDigit("LSB") == "1")
+        #expect(model.modeDigit("USB") == "2")
+        #expect(model.modeDigit("CW") == "3")
+        #expect(model.modeDigit("FM") == "4")
+        #expect(model.modeDigit("AM") == "5")
+        #expect(model.modeDigit("FSK") == "6")
+        #expect(model.modeDigit("CW-R") == "7")
+        #expect(model.modeDigit("FSK-R") == "9")
+        #expect(model.modeDigit("UNKNOWN") == "2")
+    }
+
+    @Test func testSetModeUpdatesModelOptimistically() {
+        // Regression: the mode Picker is bound to model.mode. Selecting a mode
+        // must reflect the selection immediately; otherwise the control stays
+        // on the last server-reported mode (e.g. LSB on 40 m) even though the
+        // rig was commanded to USB — "the command is sent but the control
+        // shows the old mode".
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        model.mode = "LSB"
+
+        model.setMode("USB")
+
+        #expect(model.mode == "USB")
+        #expect(sent == ["MD2;"])
+    }
+
+    @Test func testSetModeNeverChangesModeOnScroll() {
+        // Scrolling the VFO only tunes frequency; it must never emit a mode
+        // command or touch the mode state (the user's symptom is that the
+        // mode control flips to LSB while scrolling).
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        model.mode = "USB"
+        model.freqA = 14000000
+
+        model.nudgeFreq(100)
+        model.nudgeFreq(-100)
+
+        #expect(model.mode == "USB")
+        #expect(sent.allSatisfy { $0.hasPrefix("FA") })
     }
 
     @Test func testApplyEventFrequencyA() {
@@ -46,14 +81,14 @@ struct RemoteRigModelTests {
 
     @Test func testApplyEventMode() {
         let model = RemoteRigModel()
-        model.applyEvent("MD1;")
+        model.applyEvent("MD2;")
         #expect(model.mode == "USB")
 
-        model.applyEvent("MD0;")
+        model.applyEvent("MD1;")
         #expect(model.mode == "LSB")
 
         model.applyEvent("MD3;")
-        #expect(model.mode == "FM")
+        #expect(model.mode == "CW")
     }
 
     @Test func testApplyEventSMeter() {
@@ -604,5 +639,55 @@ struct RemoteRigModelTests {
         let model = RemoteRigModel()
         #expect(model.opusBitrate >= RemoteRigModel.minOpusBitrate)
         #expect(model.opusBitrate <= RemoteRigModel.maxOpusBitrate)
+    }
+
+    @Test func testBandModel() {
+        #expect(Band.all.count == 12)
+        #expect(Band.all[0] == Band(id: 0, label: "160 m"))
+        #expect(Band.all[4] == Band(id: 4, label: "20 m"))
+        #expect(Band.all[10] == Band(id: -1, label: "60 m"))
+        #expect(Band.all[11] == Band(id: 10, label: "GENE"))
+        #expect(Band(id: -1, label: "60 m").is60m == true)
+        #expect(Band(id: 0, label: "160 m").is60m == false)
+        #expect(Band(id: -1, label: "60 m").isBD == false)
+        #expect(Band(id: 4, label: "20 m").isBD == true)
+        #expect(Band.default60mFreq == 5_330_000)
+    }
+
+@Test func testSelectBandBD() {
+        let model = RemoteRigModel()
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+        let band = Band(id: 4, label: "20 m")
+
+        model.selectBand(band)
+
+        #expect(model.selectedBand == band)
+        #expect(sent == ["BD04;", "FA;", "MD;"])
+    }
+
+    @Test func testSelectBandBDWithVFOB() {
+        let model = RemoteRigModel()
+        model.activeVFO = .b
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.selectBand(Band(id: 8, label: "10 m"))
+
+        #expect(sent == ["BD08;", "FB;", "MD;"])
+    }
+
+    @Test func testSelectBand60m() {
+        let model = RemoteRigModel()
+        model.band60Freq = 5_330_500
+        var sent: [String] = []
+        model.onSendCat = { sent.append($0) }
+
+        model.selectBand(Band(id: -1, label: "60 m"))
+
+        #expect(sent.count == 2)
+        #expect(sent[0].hasPrefix("FA"))
+        #expect(sent[0].contains("05330500"))
+        #expect(sent[1] == "MD;")
     }
 }

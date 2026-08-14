@@ -16,6 +16,7 @@ type Manager struct {
 	mu       sync.Mutex
 	def      *protocol.OpusParams
 	device   string
+	gain     float32
 	sendDown func(uint16, []byte)
 	rxPaused atomic.Bool
 
@@ -26,11 +27,14 @@ type Manager struct {
 	log *zap.Logger
 }
 
-func NewManager(def *protocol.OpusParams, device string, sendDown func(uint16, []byte), log *zap.Logger) *Manager {
+func NewManager(def *protocol.OpusParams, device string, gain float32, sendDown func(uint16, []byte), log *zap.Logger) *Manager {
 	if def == nil {
 		def = &protocol.OpusParams{SampleRate: 48000, Channels: 1, FrameMs: 20, Bitrate: 48000}
 	}
-	return &Manager{def: def, device: device, sendDown: sendDown, log: log}
+	if gain <= 0 {
+		gain = 1.0
+	}
+	return &Manager{def: def, device: device, gain: gain, sendDown: sendDown, log: log}
 }
 
 // SetSendDown wires the downlink sender (the UDP server) after both exist.
@@ -48,7 +52,7 @@ func (m *Manager) Start(req *protocol.OpusParams) (*protocol.OpusParams, bool, e
 	if req == nil {
 		req = m.def
 	}
-	eff, st, err := Open(m.device, req, m.sendDown, &m.rxPaused, m.log)
+	eff, st, err := Open(m.device, req, m.gain, m.sendDown, &m.rxPaused, m.log)
 	if err != nil {
 		return nil, false, err
 	}

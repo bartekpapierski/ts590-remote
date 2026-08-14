@@ -11,3 +11,7 @@ server/server.yaml
 client/.build/
 client/RemoteRig.app
 client/.swiftpm/
+
+# Reference PDFs and diagnostic audio dumps
+*.pdf
+*.pcm

@@ -69,7 +69,7 @@ func main() {
 		Bitrate:    cfg.Audio.OpusBitrate,
 	}
 
-	mgr := audio.NewManager(def, cfg.Audio.Device, nil, logger)
+	mgr := audio.NewManager(def, cfg.Audio.Device, float32(cfg.Audio.Gain), nil, logger)
 	udp, err := netpkg.NewUDPServer(cfg.Network.AudioAddr, mgr, logger)
 	if err != nil {
 		logger.Fatal("udp server failed", zap.Error(err))

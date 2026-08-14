@@ -19,6 +19,7 @@ final class RemoteRigModel: ObservableObject {
     @Published var freqB: Int64 = 14000000
     @Published var mode = "USB"
     @Published var ptt = false
+    @Published var txLock = false
     @Published var af = 120
     @Published var rf = 255
     @Published var power = 50
@@ -80,6 +81,10 @@ final class RemoteRigModel: ObservableObject {
     // reaches the wire without a live connection.
     var onSendCat: ((String) -> Void)?
 
+    // Test seam: invoked for every PTT message sent, so tests can assert the
+    // momentary pad and the TX lock latch without a live connection.
+    var onSendPTT: ((Bool) -> Void)?
+
     // MARK: lifecycle
     func connect() {
         disconnect()
@@ -101,6 +106,7 @@ final class RemoteRigModel: ObservableObject {
         control = nil
         connected = false
         status = "disconnected"
+        updatePTT(false)
         stopLocalAudio()
     }
 
@@ -172,7 +178,7 @@ final class RemoteRigModel: ObservableObject {
             audio?.configure(params: p)
             if m.adjusted == true { status = "audio: params adjusted by server" }
         case "ptt_ack":
-            if let on = m.on { ptt = on }
+            if let on = m.on { updatePTT(on) }
         case "error":
             status = "error: \(m.msg ?? "unknown")"
         default:
@@ -184,7 +190,7 @@ final class RemoteRigModel: ObservableObject {
         freqA = s.freqA
         freqB = s.freqB
         mode = s.mode
-        ptt = s.ptt
+        updatePTT(s.ptt)
         af = s.af
         rf = s.rf
         power = s.power
@@ -193,6 +199,13 @@ final class RemoteRigModel: ObservableObject {
         audioOn = s.audioOn
         rxPaused = s.rxPaused
         powerOn = s.powerOn
+    }
+
+    // A PTT report from the wire (state or ack). If the rig says the latch is
+    // no longer keying TX, drop the latch so the indicator stays honest.
+    private func updatePTT(_ on: Bool) {
+        ptt = on
+        if !on { txLock = false }
     }
 
     func applyEvent(_ raw: String) {
@@ -264,8 +277,21 @@ final class RemoteRigModel: ObservableObject {
     func setSQL(_ v: Int) { sql = v; sendCat("SQL" + String(format: "%03d", v) + ";") }
 
     func setPTT(_ on: Bool) {
+        // While latched, the latch owns TX: the momentary pad (or spacebar)
+        // cannot unkey it. Release only via the TX LOCK toggle or a rig report.
+        if txLock && !on { return }
+        ptt = on
+        onSendPTT?(on)
         send(Msg(t: "ptt", on: on))
         if let a = audio { a.pttActive = on }
+    }
+
+    // TX LOCK — latch the transmitter on until released. Distinct from the
+    // momentary hold pad: the latch survives until the operator toggles it off
+    // (or the rig reports it is no longer keying).
+    func toggleTXLock() {
+        txLock.toggle()
+        setPTT(txLock)
     }
 
     func toggleAudio() {

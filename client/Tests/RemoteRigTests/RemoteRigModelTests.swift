@@ -205,6 +205,128 @@ struct RemoteRigModelTests {
         #expect(model.activeVFO == .a)
     }
 
+    // MARK: TX LOCK latch
+
+    private func stateLine(ptt: Bool) -> String {
+        #"{"t":"state","state":{"freqA":14000000,"freqB":7000000,"mode":"USB","ptt":\#(ptt),"af":120,"rf":255,"power":50,"sql":0,"smeter":0,"audioOn":false,"rxPaused":false,"powerOn":true}}"#
+    }
+
+    @Test func testTXLockLatchesAndKeysPTT() {
+        let model = RemoteRigModel()
+        var sentPTT: [Bool] = []
+        model.onSendPTT = { sentPTT.append($0) }
+
+        model.toggleTXLock()
+
+        #expect(model.txLock == true)
+        #expect(model.ptt == true)
+        #expect(sentPTT == [true])
+    }
+
+    @Test func testTXLockReleaseSendsPTTOff() {
+        let model = RemoteRigModel()
+        var sentPTT: [Bool] = []
+        model.onSendPTT = { sentPTT.append($0) }
+
+        model.toggleTXLock()
+        model.toggleTXLock()
+
+        #expect(model.txLock == false)
+        #expect(model.ptt == false)
+        #expect(sentPTT == [true, false])
+    }
+
+    @Test func testTXLockHoldsPTTTrueAcrossStateRefresh() {
+        let model = RemoteRigModel()
+        var sentPTT: [Bool] = []
+        model.onSendPTT = { sentPTT.append($0) }
+
+        model.toggleTXLock()
+        #expect(model.ptt == true)
+
+        // The keyed rig reports PTT on in the state refresh; the latch holds.
+        model.handleLine(stateLine(ptt: true))
+        #expect(model.ptt == true)
+        #expect(model.txLock == true)
+
+        // Releasing sends PTT off.
+        model.toggleTXLock()
+        #expect(model.txLock == false)
+        #expect(model.ptt == false)
+        #expect(sentPTT == [true, false])
+    }
+
+    @Test func testTXLockFollowsAckUnkey() {
+        let model = RemoteRigModel()
+        model.toggleTXLock()
+        #expect(model.txLock == true)
+
+        // A hold-pad release (or a foreign unkey) drops TX; the latch follows.
+        model.handleLine(#"{"t":"ptt_ack","on":false}"#)
+
+        #expect(model.ptt == false)
+        #expect(model.txLock == false)
+    }
+
+    @Test func testTXLockFollowsStateUnkey() {
+        let model = RemoteRigModel()
+        model.toggleTXLock()
+        #expect(model.txLock == true)
+
+        model.handleLine(stateLine(ptt: false))
+
+        #expect(model.ptt == false)
+        #expect(model.txLock == false)
+    }
+
+    @Test func testTXLockDoesNotEngageOnForeignKeyUp() {
+        let model = RemoteRigModel()
+        model.handleLine(#"{"t":"ptt_ack","on":true}"#)
+
+        #expect(model.ptt == true)
+        #expect(model.txLock == false)
+    }
+
+    @Test func testMomentaryPadDoesNotLatch() {
+        let model = RemoteRigModel()
+        var sentPTT: [Bool] = []
+        model.onSendPTT = { sentPTT.append($0) }
+
+        model.setPTT(true)
+        model.setPTT(false)
+
+        #expect(model.txLock == false)
+        #expect(model.ptt == false)
+        #expect(sentPTT == [true, false])
+    }
+
+    @Test func testMomentaryPadInertWhileLatched() {
+        let model = RemoteRigModel()
+        var sentPTT: [Bool] = []
+        model.onSendPTT = { sentPTT.append($0) }
+
+        model.toggleTXLock()
+        model.setPTT(true)
+        model.setPTT(false)
+
+        // The pad cannot unkey a latched TX (its key-up is dropped); the latch
+        // survives until toggled.
+        #expect(model.txLock == true)
+        #expect(model.ptt == true)
+        #expect(sentPTT == [true, true])
+    }
+
+    @Test func testDisconnectClearsTXLock() {
+        let model = RemoteRigModel()
+        model.toggleTXLock()
+        #expect(model.txLock == true)
+
+        model.disconnect()
+
+        #expect(model.txLock == false)
+        #expect(model.ptt == false)
+    }
+
     @Test func testAudioStoppedTearsDownEngine() {
         let model = RemoteRigModel()
         model.setupAudioEngine()

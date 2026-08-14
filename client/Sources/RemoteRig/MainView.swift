@@ -150,16 +150,15 @@ struct MainView: View {
                 .onEnded { _ in pressing = false; model.setPTT(false) })
             .disabled(!model.connected)
 
-            // TX lock — latch the transmitter (wiring arrives with the model
-            // follow-up; disabled until then).
-            Button("LOCK") {
-                // TODO(model): latch PTT on/off.
-            }
-            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-            .foregroundColor(Theme.dim)
-            .buttonStyle(.bordered)
-            .frame(width: 64)
-            .disabled(true)
+            // TX lock — latch the transmitter on until released (or the rig
+            // reports it dropped TX). Separate from the momentary hold pad.
+            Button("TX LOCK") { model.toggleTXLock() }
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundColor(model.txLock ? Theme.warn : Theme.dim)
+                .buttonStyle(.bordered)
+                .tint(model.txLock ? Theme.warn : .primary)
+                .frame(width: 88)
+                .disabled(!model.connected)
         }
     }
 

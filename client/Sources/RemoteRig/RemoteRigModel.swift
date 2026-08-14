@@ -85,6 +85,10 @@ final class RemoteRigModel: ObservableObject {
     // momentary pad and the TX lock latch without a live connection.
     var onSendPTT: ((Bool) -> Void)?
 
+    // Test seam: invoked with the action ("start"/"stop") for every audio
+    // message sent, so tests can assert auto-start without a live connection.
+    var onSendAudio: ((String) -> Void)?
+
     // MARK: lifecycle
     func connect() {
         disconnect()
@@ -154,6 +158,7 @@ final class RemoteRigModel: ObservableObject {
         switch m.t {
         case "auth_ok":
             status = "connected"
+            startAudio()
         case "auth_fail":
             status = "auth failed"
             disconnect()
@@ -294,18 +299,25 @@ final class RemoteRigModel: ObservableObject {
         setPTT(txLock)
     }
 
+    func startAudio() {
+        let req = OpusParams(
+            sampleRate: opusSampleRate,
+            channels: opusChannels,
+            frameMs: opusFrameMs,
+            bitrate: opusBitrate)
+        onSendAudio?("start")
+        send(Msg(t: "audio", action: "start", opus: req))
+        openAudioUDP()
+        setupAudioEngine()
+    }
+
+    func stopAudio() {
+        onSendAudio?("stop")
+        send(Msg(t: "audio", action: "stop"))
+    }
+
     func toggleAudio() {
-        if audioOn { send(Msg(t: "audio", action: "stop")) }
-        else {
-            let req = OpusParams(
-                sampleRate: opusSampleRate,
-                channels: opusChannels,
-                frameMs: opusFrameMs,
-                bitrate: opusBitrate)
-            send(Msg(t: "audio", action: "start", opus: req))
-            openAudioUDP()
-            setupAudioEngine()
-        }
+        if audioOn { stopAudio() } else { startAudio() }
     }
 
     func toggleRxPause() {

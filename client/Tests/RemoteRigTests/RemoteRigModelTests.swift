@@ -327,6 +327,18 @@ struct RemoteRigModelTests {
         #expect(model.ptt == false)
     }
 
+    @Test func testAuthOKAutoStartsAudio() {
+        let model = RemoteRigModel()
+        var sentAudio: [String] = []
+        model.onSendAudio = { sentAudio.append($0) }
+
+        model.handleLine(#"{"t":"auth_ok"}"#)
+
+        #expect(model.status == "connected")
+        #expect(sentAudio == ["start"])
+        #expect(model.audio != nil)
+    }
+
     @Test func testAudioStoppedTearsDownEngine() {
         let model = RemoteRigModel()
         model.setupAudioEngine()

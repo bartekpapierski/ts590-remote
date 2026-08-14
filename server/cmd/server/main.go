@@ -27,6 +27,8 @@ func main() {
 		cfg.Audio.OpusFrameMs = 20
 		cfg.Audio.OpusBitrate = 48000
 		cfg.Audio.JitterFrames = 2
+		cfg.Audio.JitterMinFrames = 1
+		cfg.Audio.JitterMaxFrames = 64
 		cfg.Network.ControlAddr = "0.0.0.0:5900"
 		cfg.Network.AudioAddr = "0.0.0.0:5901"
 	}
@@ -69,7 +71,7 @@ func main() {
 		Bitrate:    cfg.Audio.OpusBitrate,
 	}
 
-	mgr := audio.NewManager(def, cfg.Audio.Device, float32(cfg.Audio.Gain), nil, logger)
+	mgr := audio.NewManager(def, cfg.Audio.Device, float32(cfg.Audio.Gain), cfg.Audio.JitterFrames, cfg.Audio.JitterMinFrames, cfg.Audio.JitterMaxFrames, nil, logger)
 	udp, err := netpkg.NewUDPServer(cfg.Network.AudioAddr, mgr, logger)
 	if err != nil {
 		logger.Fatal("udp server failed", zap.Error(err))

@@ -12,7 +12,11 @@ audio:
   channels: 1
   opusFrameMs: 20
   opusBitrate: 48000
+  # initial uplink jitter depth (frames); adapts automatically between the
+  # min and max below based on dropouts and buffer fill
   jitterFrames: 2
+  jitterMinFrames: 1
+  jitterMaxFrames: 64
 
 network:
   controlAddr: "0.0.0.0:5900"

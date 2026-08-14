@@ -22,6 +22,15 @@ final class AudioEngine {
     private var uplinkSeq: UInt16 = 0
     private var downlinkExpected: UInt16 = 0
 
+    // Adaptive downlink jitter: pre-buffer `adaptive.depth` frames before
+    // rendering, then tune that depth to the observed stream.
+    private var downlinkStarted = false
+    private var adaptive = AdaptiveJitter(depth: 2, minDepth: 1, maxDepth: 20)
+    private var downlinkDropouts = 0
+    private var downlinkSkips = 0
+    private var downlinkLate = 0
+    private var statsFrames = 0
+
     init(inputDevice: AudioDeviceID?, outputDevice: AudioDeviceID?) {
         self.inputDevice = inputDevice
         self.outputDevice = outputDevice
@@ -111,6 +120,7 @@ final class AudioEngine {
             if gap > 0 && gap < 32 {
                 for _ in 0..<gap {
                     if let plc = dec.decodePLC() { enqueue(plc) }
+                    downlinkSkips += 1
                     downlinkExpected = downlinkExpected &+ 1
                 }
             }
@@ -118,22 +128,65 @@ final class AudioEngine {
         let bytes = [UInt8](data)
         if let pcm = dec.decode(bytes) { enqueue(pcm) }
         downlinkExpected = seq &+ 1
+
+        statsFrames += 1
+        if statsFrames >= 250 { // ~5 s at 20 ms frames
+            statsFrames = 0
+            var line = ""
+            queueLock.lock()
+            line = "downlink jitter: depth=\(adaptive.depth) dropouts=\(downlinkDropouts) skips=\(downlinkSkips) late=\(downlinkLate) fill=\(downlinkQueue.count / max(frameSamples, 1))"
+            queueLock.unlock()
+            print(line)
+        }
+    }
+
+    private var frameSamples: Int {
+        ((params?.sampleRate ?? 48000) * (params?.frameMs ?? 20) / 1000) * (params?.channels ?? 1)
     }
 
     private func enqueue(_ samples: [Int16]) {
+        let fs = frameSamples
         queueLock.lock()
+        let starved = downlinkStarted && downlinkQueue.isEmpty
         downlinkQueue.append(contentsOf: samples)
-        let max = ((params?.sampleRate ?? 48000) * (params?.frameMs ?? 20) / 1000) * (params?.channels ?? 1) * 20
-        if downlinkQueue.count > max {
-            downlinkQueue.removeFirst(downlinkQueue.count - max)
+        let bufferCap = fs * 20
+        if downlinkQueue.count > bufferCap {
+            let excess = downlinkQueue.count - bufferCap
+            if downlinkStarted && excess >= fs {
+                downlinkLate += 1
+            }
+            downlinkQueue.removeFirst(downlinkQueue.count - bufferCap)
+        }
+        if downlinkStarted {
+            if starved {
+                downlinkDropouts += 1
+                // Playback starved: drop back into refill mode so the buffer
+                // accumulates to the grown target depth before resuming,
+                // instead of draining straight away.
+                downlinkStarted = false
+            }
+            // Tune depth when playback starved (grow) or persistently over-filled (shrink).
+            adaptive.update(isDropout: starved, occupancyFrames: downlinkQueue.count / max(fs, 1))
         }
         queueLock.unlock()
     }
 
     private func renderOutput(_ list: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
         let channels = params?.channels ?? 1
-        var out = [Int16]()
+        let fs = frameSamples
+
         queueLock.lock()
+        // Pre-buffer the target depth before starting to render, so an initial
+        // burst of jitter is absorbed instead of causing immediate dropouts.
+        if !downlinkStarted {
+            if downlinkQueue.count < adaptive.depth * fs {
+                queueLock.unlock()
+                fillSilence(list, frameCount: frameCount, channels: channels)
+                return
+            }
+            downlinkStarted = true
+        }
+        var out = [Int16]()
         let take = min(frameCount * channels, downlinkQueue.count)
         out = Array(downlinkQueue[0..<take])
         downlinkQueue.removeFirst(take)
@@ -162,6 +215,21 @@ final class AudioEngine {
         }
     }
 
+    private func fillSilence(_ list: UnsafeMutablePointer<AudioBufferList>, frameCount: Int, channels: Int) {
+        let abl = UnsafeMutableAudioBufferListPointer(list)
+        for buffer in abl {
+            guard let raw = buffer.mData else { continue }
+            let ch = Int(buffer.mNumberChannels)
+            let bytesPerFrame = UInt32(MemoryLayout<Float>.stride) * UInt32(ch)
+            let frames = Int(buffer.mDataByteSize / max(bytesPerFrame, 1))
+            let n = min(frameCount, frames)
+            for i in 0..<n {
+                let ptr = raw.assumingMemoryBound(to: Float.self)
+                for c in 0..<ch { ptr[i * ch + c] = 0 }
+            }
+        }
+    }
+
     func stop() {
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
@@ -173,6 +241,12 @@ final class AudioEngine {
         queueLock.lock()
         downlinkQueue.removeAll()
         queueLock.unlock()
+        downlinkStarted = false
+        adaptive = AdaptiveJitter(depth: 2, minDepth: 1, maxDepth: 20)
+        downlinkDropouts = 0
+        downlinkSkips = 0
+        downlinkLate = 0
+        statsFrames = 0
     }
 
     private func bufferToInt16(_ buffer: AVAudioPCMBuffer, channels: Int) -> [Int16] {

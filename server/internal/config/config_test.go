@@ -54,6 +54,12 @@ network:
 	if c.Audio.JitterFrames != 2 {
 		t.Errorf("Audio.JitterFrames = %d, want 2", c.Audio.JitterFrames)
 	}
+	if c.Audio.JitterMinFrames != 1 {
+		t.Errorf("Audio.JitterMinFrames = %d, want 1", c.Audio.JitterMinFrames)
+	}
+	if c.Audio.JitterMaxFrames != 64 {
+		t.Errorf("Audio.JitterMaxFrames = %d, want 64", c.Audio.JitterMaxFrames)
+	}
 	if c.Audio.Gain != 1.0 {
 		t.Errorf("Audio.Gain = %v, want 1.0", c.Audio.Gain)
 	}
@@ -80,6 +86,8 @@ audio:
   opusFrameMs: 40
   opusBitrate: 32000
   jitterFrames: 4
+  jitterMinFrames: 2
+  jitterMaxFrames: 16
 network:
   controlAddr: "127.0.0.1:5900"
   audioAddr: "127.0.0.1:5901"
@@ -120,6 +128,12 @@ network:
 	}
 	if c.Audio.JitterFrames != 4 {
 		t.Errorf("Audio.JitterFrames = %d, want 4", c.Audio.JitterFrames)
+	}
+	if c.Audio.JitterMinFrames != 2 {
+		t.Errorf("Audio.JitterMinFrames = %d, want 2", c.Audio.JitterMinFrames)
+	}
+	if c.Audio.JitterMaxFrames != 16 {
+		t.Errorf("Audio.JitterMaxFrames = %d, want 16", c.Audio.JitterMaxFrames)
 	}
 	if c.Network.ControlAddr != "127.0.0.1:5900" {
 		t.Errorf("Network.ControlAddr = %q, want %q", c.Network.ControlAddr, "127.0.0.1:5900")

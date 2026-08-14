@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gordonklaus/portaudio"
 	"go.uber.org/zap"
@@ -50,7 +51,7 @@ type Stream struct {
 // Open discovers the USB audio device, clamps the Opus parameters to its
 // capabilities, and opens the full-duplex PortAudio stream. It returns the
 // effective parameters the client must also use.
-func Open(device string, req *protocol.OpusParams, gain float32, sendDown func(uint16, []byte), rxPaused *atomic.Bool, log *zap.Logger) (*protocol.OpusParams, *Stream, error) {
+func Open(device string, req *protocol.OpusParams, gain float32, jitter, jitterMin, jitterMax int, sendDown func(uint16, []byte), rxPaused *atomic.Bool, log *zap.Logger) (*protocol.OpusParams, *Stream, error) {
 	devs, err := portaudio.Devices()
 	if err != nil {
 		return nil, nil, err
@@ -116,7 +117,7 @@ func Open(device string, req *protocol.OpusParams, gain float32, sendDown func(u
 		enc:       enc,
 		dec:       dec,
 		inWake:    make(chan struct{}, 1),
-		uplink:    newUplinkJB(fs * eff.Channels),
+		uplink:    newUplinkJBDepth(fs*eff.Channels, jitter, jitterMin, jitterMax),
 		sendDown:  sendDown,
 		rxPaused:  rxPaused,
 		log:       log,
@@ -163,7 +164,41 @@ func Open(device string, req *protocol.OpusParams, gain float32, sendDown func(u
 }
 
 // Start begins audio flow.
-func (s *Stream) Start() error { return s.pa.Start() }
+func (s *Stream) Start() error {
+	if err := s.pa.Start(); err != nil {
+		return err
+	}
+	go s.statsLoop()
+	return nil
+}
+
+// jitterStatsInterval controls how often the uplink jitter buffer is logged.
+const jitterStatsInterval = 5 * time.Second
+
+// statsLoop periodically logs the uplink jitter buffer so an operator can see
+// it adapting to the live connection.
+func (s *Stream) statsLoop() {
+	t := time.NewTicker(jitterStatsInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.closed:
+			return
+		case <-t.C:
+			st := s.uplink.stats()
+			s.log.Info("uplink jitter",
+				zap.Int("depth", st.Depth),
+				zap.Int("min", st.MinDepth),
+				zap.Int("max", st.MaxDepth),
+				zap.Bool("started", st.Started),
+				zap.Int64("dropouts", st.Dropouts),
+				zap.Int64("skips", st.Skips),
+				zap.Int64("late", st.Late),
+				zap.Int("fill", st.Fill),
+				zap.Int("occupancy", st.Occupancy))
+		}
+	}
+}
 
 // Close stops and releases the PortAudio stream.
 func (s *Stream) Close() {

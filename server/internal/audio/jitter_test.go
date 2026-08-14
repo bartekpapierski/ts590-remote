@@ -161,11 +161,17 @@ func TestJitterBufferDropsBehindPlayhead(t *testing.T) {
 		t.Errorf("get() returned %v, want no frame (late seq 4 dropped)", f)
 	}
 
-	// A frame within the window is still accepted.
+	// Frames within the window are still accepted. The true underrun above
+	// grew the target depth from 1 to 2, so refill needs two frames before
+	// playback resumes.
 	jb.put(7, []int16{3})
+	jb.put(8, []int16{4})
 	f, ok = jb.get()
 	if !ok || f[0] != 3 {
 		t.Errorf("get() = %v, %v; want [3], true", f, ok)
+	}
+	if f, ok = jb.get(); !ok || f[0] != 4 {
+		t.Errorf("get() = %v, %v; want [4], true", f, ok)
 	}
 }
 
@@ -238,6 +244,148 @@ func TestJitterBufferWraparound(t *testing.T) {
 	}
 	if f[0] != 100 {
 		t.Errorf("get() returned %v, want [100]", f)
+	}
+}
+
+func TestJitterBufferPreBuffersToDepth(t *testing.T) {
+	jb := newUplinkJBDepth(960, 3, 1, 8)
+
+	f, ok := jb.get()
+	if ok || f != nil {
+		t.Errorf("get() on empty buffer = %v, %v; want nil, false", f, ok)
+	}
+
+	// Holding back output until the target depth of 3 frames accumulates.
+	jb.put(0, []int16{1})
+	f, ok = jb.get()
+	if ok {
+		t.Errorf("get() should hold while below depth; got ok=%v", ok)
+	}
+	jb.put(1, []int16{2})
+	f, ok = jb.get()
+	if ok {
+		t.Errorf("get() should hold while below depth; got ok=%v", ok)
+	}
+
+	// Pre-buffering is not an underrun and must not grow the depth.
+	st := jb.stats()
+	if st.Dropouts != 0 {
+		t.Errorf("pre-buffer Dropouts = %d, want 0", st.Dropouts)
+	}
+	if st.Depth != 3 {
+		t.Errorf("pre-buffer Depth = %d, want 3", st.Depth)
+	}
+
+	jb.put(2, []int16{3})
+	f, ok = jb.get()
+	if !ok || f[0] != 1 {
+		t.Errorf("get() after reaching depth = %v, %v; want [1], true", f, ok)
+	}
+	f, ok = jb.get()
+	if !ok || f[0] != 2 {
+		t.Errorf("get() #2 = %v, %v; want [2], true", f, ok)
+	}
+}
+
+func TestJitterBufferGrowsDepthOnUnderrun(t *testing.T) {
+	jb := newUplinkJBDepth(960, 2, 1, 4)
+	seq := uint16(0)
+	feed := func(n int) {
+		for i := 0; i < n; i++ {
+			jb.put(seq, []int16{int16(seq)})
+			seq++
+		}
+	}
+
+	// Each cycle: refill to the current target depth, drain through it, then
+	// hit a true underrun, which grows the target depth (capped at max).
+	for want := 2; want <= 4; want++ {
+		feed(jb.stats().Depth)
+		for i := 0; i < want; i++ {
+			if _, ok := jb.get(); !ok {
+				t.Fatalf("depth %d: expected %d frames to play, underran at %d", jb.stats().Depth, want, i)
+			}
+		}
+		if _, ok := jb.get(); ok {
+			t.Fatal("expected a true underrun after draining the refilled depth")
+		}
+		expected := want + 1
+		if expected > 4 {
+			expected = 4
+		}
+		if d := jb.stats().Depth; d != expected {
+			t.Errorf("Depth after draining %d = %d, want %d", want, d, expected)
+		}
+	}
+}
+
+func TestJitterBufferShrinksDepthWhenOverfilled(t *testing.T) {
+	jb := newUplinkJBDepth(960, 5, 1, 8)
+
+	// Preload 40 frames so playback has plenty to draw from.
+	const preload = 40
+	for i := 0; i < preload; i++ {
+		jb.put(uint16(i), []int16{int16(i)})
+	}
+	if d := jb.stats().Depth; d != 5 {
+		t.Fatalf("initial Depth = %d, want 5", d)
+	}
+
+	// Drain steadily while topping the buffer up just ahead of the play
+	// head, keeping it persistently over-filled (no underruns, no lost
+	// frames). The target depth should be recovered.
+	next := 0
+	for k := 0; k < 300; k++ {
+		for t := 0; t < 5; t++ {
+			seq := next + preload + t
+			jb.put(uint16(seq), []int16{int16(seq)})
+		}
+		if _, ok := jb.get(); !ok {
+			t.Fatalf("get() #%d underran unexpectedly", k)
+		}
+		next++
+	}
+	st := jb.stats()
+	if st.Depth >= 5 {
+		t.Errorf("Depth = %d, want shrunk below 5", st.Depth)
+	}
+	if st.Dropouts != 0 {
+		t.Errorf("Dropouts = %d, want 0", st.Dropouts)
+	}
+	if st.Skips != 0 {
+		t.Errorf("Skips = %d, want 0", st.Skips)
+	}
+}
+
+func TestJitterBufferStats(t *testing.T) {
+	jb := newUplinkJBDepth(960, 2, 1, 8)
+
+	jb.put(0, []int16{1})
+	jb.put(1, []int16{2})
+	jb.put(4, []int16{5}) // far ahead
+
+	if f, ok := jb.get(); !ok || f[0] != 1 {
+		t.Fatalf("get = %v, %v; want [1], true", f, ok)
+	}
+	// next is now 1; a frame behind it is dropped as late.
+	jb.put(0, []int16{99})
+
+	if f, ok := jb.get(); !ok || f[0] != 2 {
+		t.Fatalf("get #2 = %v, %v; want [2], true", f, ok)
+	}
+
+	st := jb.stats()
+	if !st.Started {
+		t.Error("Started should be true")
+	}
+	if st.Late != 1 {
+		t.Errorf("Late = %d, want 1", st.Late)
+	}
+	if st.Occupancy != 1 { // frame 4 still buffered
+		t.Errorf("Occupancy = %d, want 1", st.Occupancy)
+	}
+	if st.Fill != 1 { // frame 4 ahead of next (2)
+		t.Errorf("Fill = %d, want 1", st.Fill)
 	}
 }
 

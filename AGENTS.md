@@ -29,7 +29,8 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   `radio.Send`/`handleLine` reply-or-event matching through a scripted fake port
   (`isQueryCmd`, `timeoutFor`, query echo / reject / fire-and-forget / timeout),
   audio param clamping (`ClampParams`, `FrameSize`), jitter buffer (`seqDelta`, put/get,
-  lost-packet skipping, wraparound), protocol message builders, config loading with
+  pre-buffer-to-depth, lost-packet skipping, adaptive grow-on-underrun / shrink-on-overfill,
+  wraparound), protocol message builders, config loading with
   defaults, and — in `net` — table-driven `dispatch` (every message type through the
   `RigIf`/`AudioIf` seams, run with `-race`), `handle` auth + CAT + event forwarding
   over `net.Pipe`, and concurrent `msgWriter` integrity.
@@ -97,7 +98,14 @@ client/   Swift macOS client (Package.swift, Sources/RemoteRig, Tests/RemoteRigT
   params with `adjusted=false`.
 - The uplink jitter buffer drops late frames and skips lost ones (jumps the play
   head to the oldest buffered frame); there is no packet-loss concealment, so a
-  lost mic frame becomes a silent output frame.
+  lost mic frame becomes a silent output frame. It is **adaptive** (both ends):
+  the server's `uplinkJB` and the client's `AdaptiveJitter` pre-buffer a target
+  depth (initialised from `audio.jitterFrames`, default 2, bounded by
+  `audio.jitterMinFrames`/`audio.jitterMaxFrames`), grow it on silent underruns
+  (and then re-buffer to the grown depth before resuming), and slowly shrink it
+  when the buffer stays over-filled — so latency and dropouts trade off
+  automatically on a live link. Server depth/stats are logged every 5 s
+  (`uplink jitter`); the client prints `downlink jitter` every ~5 s.
 - The client re-uses the control TCP connection for everything; audio UDP is
   opened lazily only when audio starts.
 - `setFreq` clamps negative frequencies to 0 (both `freqA` and the CAT string).
